@@ -1,4 +1,4 @@
-<img src="./diagram.png" width="500px"></img>
+<img src="./diagram.png" width="700px"></img>
 
 ## Lie Transformer - Pytorch (wip)
 
