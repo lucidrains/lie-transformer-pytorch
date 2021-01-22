@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
   name = 'lie-transformer-pytorch',
-  packages = find_packages(exclude=['examples']),
+  packages = find_packages(),
   version = '0.0.1',
   license='MIT',
   description = 'Lie Transformer - Pytorch',
@@ -12,7 +12,10 @@ setup(
   keywords = [
     'artificial intelligence',
     'attention mechanism',
-    'transformers'
+    'transformers',
+    'equivariance',
+    'lifting',
+    'lie groups'
   ],
   install_requires=[
     'torch>=1.6',
