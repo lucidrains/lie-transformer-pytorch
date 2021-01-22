@@ -28,15 +28,30 @@ mask = torch.ones(1, 64).bool()
 out = model((coors, x, mask)) # (1, 1)
 ```
 
+## Credit
+
+This repository is largely adapted from <a href="https://github.com/mfinzi/LieConv">LieConv</a>, cited below!
+
 ## Citations
 
 ```bibtex
 @misc{hutchinson2020lietransformer,
-    title={LieTransformer: Equivariant self-attention for Lie Groups}, 
-    author={Michael Hutchinson and Charline Le Lan and Sheheryar Zaidi and Emilien Dupont and Yee Whye Teh and Hyunjik Kim},
-    year={2020},
-    eprint={2012.10885},
-    archivePrefix={arXiv},
-    primaryClass={cs.LG}
+    title       = {LieTransformer: Equivariant self-attention for Lie Groups}, 
+    author      = {Michael Hutchinson and Charline Le Lan and Sheheryar Zaidi and Emilien Dupont and Yee Whye Teh and Hyunjik Kim},
+    year        = {2020},
+    eprint      = {2012.10885},
+    archivePrefix = {arXiv},
+    primaryClass = {cs.LG}
+}
+```
+
+```bibtex
+@misc{finzi2020generalizing,
+    title   = {Generalizing Convolutional Neural Networks for Equivariance to Lie Groups on Arbitrary Continuous Data}, 
+    author  = {Marc Finzi and Samuel Stanton and Pavel Izmailov and Andrew Gordon Wilson},
+    year    = {2020},
+    eprint  = {2002.12880},
+    archivePrefix = {arXiv},
+    primaryClass = {stat.ML}
 }
 ```
