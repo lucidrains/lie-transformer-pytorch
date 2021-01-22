@@ -112,46 +112,6 @@ class LieGroup(object):
     def __repr__(self):
         return str(self)
 
-def LieSubGroup(liegroup,generators):
-    
-    class subgroup(liegroup):
-        
-        def __init__(self,*args,**kwargs):
-            super().__init__(*args,**kwargs)
-            self.orig_dim = self.lie_dim
-            self.lie_dim = len(generators)
-            self.q_dim = self.orig_dim-len(generators)
-
-        def exp(self,a_small):
-            a_full = torch.zeros(*a_small.shape[:-1],self.orig_dim,
-                        device=a_small.device,dtype=a_small.dtype)
-            a_full[...,generators] = a_small
-            return super().exp(a_full)
-        
-        def log(self,U):
-            return super().log(U)[...,generators]
-        
-        def components2matrix(self,a_small):
-            a_full = torch.zeros(*a_small.shape[:-1],self.orig_dim,
-                         device=a_small.device,dtype=a_small.dtype)
-            a_full[...,generators] = a_small
-            return super().components2matrix(a_full)
-        
-        def matrix2components(self,A):
-            return super().matrix2components(A)[...,generators]
-        def lifted_elems(self,pt,nsamples=1):
-            """ pt (bs,n,D) mask (bs,n), per_point specifies whether to
-                use a different group element per atom in the molecule"""
-            a_full,q = super().lifted_elems(pt,nsamples)
-            a_sub = a_full[...,generators]
-            complement_generators = list(set(range(self.orig_dim))-set(generators))
-            new_qs = a_full[...,complement_generators]
-            q_sub = torch.cat([q,new_qs],dim=-1) if q is not None else new_qs
-            return a_sub,q_sub
-        # def __str__(self):
-        #     return f"Subgroup({str(liegroup)},{generators})"
-    return subgroup
-
 # Helper functions for analytic exponential maps. Uses taylor expansions near x=0
 # See http://ethaneade.com/lie_groups.pdf for derivations.
 thresh =7e-2
