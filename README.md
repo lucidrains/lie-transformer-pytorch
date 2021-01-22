@@ -18,7 +18,9 @@ from lie_transformer_pytorch import LieTransformer
 
 model = LieTransformer(
     dim = 512,
-    num_layers = 1
+    depth = 2,
+    heads = 8,
+    dim_head = 64
 )
 
 x = torch.randn(1, 64, 512)

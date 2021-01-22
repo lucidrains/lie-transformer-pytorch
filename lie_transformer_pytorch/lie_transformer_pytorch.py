@@ -287,38 +287,40 @@ class LieTransformer(nn.Module):
     def __init__(
         self,
         dim,
+        heads = 8,
+        dim_head = 64,
+        depth = 2,
         ds_frac=1,
         num_outputs=1,
         k=1536,
         nbhd=128,
-        num_layers=2,
-        mean=True,
-        per_point=True,
-        pool=True,
-        liftsamples=4,
-        fill=1/4,
-        group=SE3(),
-        knn=False,
-        cache=False,
+        mean = True,
+        per_point = True,
+        pool = True,
+        liftsamples = 4,
+        fill = 1/4,
+        knn = False,
+        cache = False,
         **kwargs
     ):
         super().__init__()
         if isinstance(fill,(float,int)):
-            fill = [fill]*num_layers
+            fill = [fill] * depth
 
+        group = SE3()
         self.group = group
         self.liftsamples = liftsamples
 
         block = lambda dim, fill: nn.Sequential(
-            LieSelfAttentionWrapper(dim, attn = partial(LieSelfAttention, dim, mc_samples=nbhd, ds_frac=ds_frac, mean=mean, group=group,fill=fill,cache=cache,knn=knn,**kwargs), fill=fill),
+            LieSelfAttentionWrapper(dim, attn = partial(LieSelfAttention, dim, heads = heads, dim_head = dim_head, mc_samples=nbhd, ds_frac=ds_frac, mean=mean, group=group,fill=fill,cache=cache,knn=knn,**kwargs), fill=fill),
             FeedForward(dim)
         )
 
         self.net = nn.Sequential(
-            Pass(nn.Linear(dim, dim),dim=1), #embedding layer
-            *[block(dim, fill[i]) for i in range(num_layers)],
-            Pass(nn.LayerNorm(dim), dim = 1),
-            Pass(nn.Linear(dim, num_outputs), dim = 1),
+            Pass(nn.Linear(dim, dim)), #embedding layer
+            *[block(dim, fill[i]) for i in range(depth)],
+            Pass(nn.LayerNorm(dim)),
+            Pass(nn.Linear(dim, num_outputs)),
             GlobalPool(mean=mean) if pool else Lambda(lambda x: x[1]),
         )
 
