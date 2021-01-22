@@ -30,6 +30,10 @@ mask = torch.ones(1, 64).bool()
 out = model((coors, features, mask)) # (1, 1)
 ```
 
+## Todo
+
+- [ ] Figure out location based attention based as described in section 3.2 - any help is appreciated here
+
 ## Credit
 
 This repository is largely adapted from <a href="https://github.com/mfinzi/LieConv">LieConv</a>, cited below!
