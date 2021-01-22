@@ -1,6 +1,6 @@
 from math import pi
 import torch
-from einops import rearrange
+from einops import rearrange, repeat
 
 class LieGroup(object):
     """ The abstract Lie Group requiring additional implementation of exp,log, and lifted_elems
@@ -55,10 +55,10 @@ class LieGroup(object):
         expanded_a,expanded_q = self.lifted_elems(p,nsamples,**kwargs) # (bs,n*ns,d), (bs,n*ns,qd)
         nsamples = expanded_a.shape[-2]//m.shape[-1]
         # expand v and mask like q
-        expanded_v = v[...,None,:].repeat((1,)*len(v.shape[:-1])+(nsamples,1)) # (bs,n,c) -> (bs,n,1,c) -> (bs,n,ns,c)
-        expanded_v = expanded_v.reshape(*expanded_a.shape[:-1],v.shape[-1]) # (bs,n,ns,c) -> (bs,n*ns,c)
-        expanded_mask = m[...,None].repeat((1,)*len(v.shape[:-1])+(nsamples,)) # (bs,n) -> (bs,n,ns)
-        expanded_mask = expanded_mask.reshape(*expanded_a.shape[:-1]) # (bs,n,ns) -> (bs,n*ns)
+        expanded_v = repeat(v, 'b n c -> b n m c', m = nsamples) # (bs,n,c) -> (bs,n,1,c) -> (bs,n,ns,c)
+        expanded_v = rearrange(expanded_v, 'b n m c -> b (n m) c') # (bs,n,ns,c) -> (bs,n*ns,c)
+        expanded_mask = repeat(m, 'b n -> b n m', m = nsamples) # (bs,n) -> (bs,n,ns)
+        expanded_mask = rearrange(expanded_mask, 'b n m -> b (n m)') # (bs,n,ns) -> (bs,n*ns)
         # convert from elems to pairs
         paired_a = self.elems2pairs(expanded_a) #(bs,n*ns,d) -> (bs,n*ns,n*ns,d)
         if expanded_q is not None:
@@ -71,10 +71,10 @@ class LieGroup(object):
     
     def expand_like(self,v,m,a):
         nsamples = a.shape[-2]//m.shape[-1]
-        expanded_v = v[...,None,:].repeat((1,)*len(v.shape[:-1])+(nsamples,1)) # (bs,n,c) -> (bs,n,1,c) -> (bs,n,ns,c)
-        expanded_v = expanded_v.reshape(*a.shape[:2],v.shape[-1]) # (bs,n,ns,c) -> (bs,n*ns,c)
-        expanded_mask = m[...,None].repeat((1,)*len(v.shape[:-1])+(nsamples,)) # (bs,n) -> (bs,n,ns)
-        expanded_mask = expanded_mask.reshape(*a.shape[:2]) # (bs,n,ns) -> (bs,n*ns)
+        expanded_v = repeat(v, 'b n c -> b n m c', m = nsamples) # (bs,n,c) -> (bs,n,1,c) -> (bs,n,ns,c)
+        expanded_v = rearrange(expanded_v, 'b n m c -> b (n m) c') # (bs,n,ns,c) -> (bs,n*ns,c)
+        expanded_mask = repeat(m, 'b n -> b n m', m = nsamples) # (bs,n) -> (bs,n,ns)
+        expanded_mask = rearrange(expanded_mask, 'b n m -> b (n m)') # (bs,n,ns) -> (bs,n*ns)
         return expanded_v, expanded_mask
     
     def elems2pairs(self,a):

@@ -6,7 +6,7 @@ import torch.nn.functional as F
 from torch import nn, einsum
 
 from lie_transformer_pytorch.se3 import SE3
-from einops import rearrange
+from einops import rearrange, repeat
 
 # constants
 
