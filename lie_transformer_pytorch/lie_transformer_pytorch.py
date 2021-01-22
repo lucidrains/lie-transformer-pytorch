@@ -283,7 +283,7 @@ class LieTransformer(nn.Module):
         [Group] Chosen group to be equivariant to.
         """
     def __init__(self, dim, ds_frac=1, num_outputs=1, k=1536, nbhd=float('inf'),
-                act="swish", bn=True, num_layers=2, mean=True, per_point=True,pool=True,
+                num_layers=2, mean=True, per_point=True,pool=True,
                 liftsamples=4, fill=1/4, group=None,knn=False,cache=False, **kwargs):
         super().__init__()
         if isinstance(fill,(float,int)):
@@ -293,7 +293,7 @@ class LieTransformer(nn.Module):
         self.liftsamples = liftsamples
 
         block = lambda dim, fill: nn.Sequential(
-            LieSelfAttentionWrapper(dim, attn = partial(LieSelfAttention, dim, mc_samples=nbhd, ds_frac=ds_frac, bn=bn,act=act, mean=mean, group=group,fill=fill,cache=cache,knn=knn,**kwargs), fill=fill),
+            LieSelfAttentionWrapper(dim, attn = partial(LieSelfAttention, dim, mc_samples=nbhd, ds_frac=ds_frac, mean=mean, group=group,fill=fill,cache=cache,knn=knn,**kwargs), fill=fill),
             FeedForward(dim)
         )
 
