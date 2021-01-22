@@ -1,11 +1,11 @@
 import math
+from functools import partial
+
 import torch
 import torch.nn.functional as F
 from torch import nn, einsum
 
 from lie_transformer_pytorch.se3 import SE3
-
-from functools import partial
 from einops import rearrange
 
 # constants
@@ -42,7 +42,7 @@ class Lambda(nn.Module):
 def FPSindices(dists,frac,mask):
     """ inputs: pairwise distances DISTS (bs,n,n), downsample_frac (float), valid atom mask (bs,n)
         outputs: chosen_indices (bs,m) """
-    m = int(math.round(frac * dists.shape[1]))
+    m = int(round(frac * dists.shape[1]))
     device = dists.device
     bs,n = dists.shape[:2]
     chosen_indices = torch.zeros(bs, m, dtype=torch.long,device=device)
@@ -132,7 +132,6 @@ class LieSelfAttention(nn.Module):
         self.mc_samples = mc_samples # number of samples to use to estimate convolution
 
         self.mean=mean  # Whether or not to divide by the number of mc_samples
-        assert ds_frac==1, "test branch no ds, will need to carefully check that subsample respects padding"
 
         self.group = group # Equivariance group for LieConv
         self.register_buffer('r',torch.tensor(2.)) # Internal variable for local_neighborhood radius, set by fill
@@ -199,15 +198,16 @@ class LieSelfAttention(nn.Module):
             avg_fill = (navg/mask.sum(-1).float().mean()).cpu().item()
             self.r +=  self.coeff*(self.fill_frac - avg_fill)
             self.fill_frac_ema += .1*(avg_fill-self.fill_frac_ema)
-        return nbhd_abq, nbhd_vals, (nbhd_mask&valid_within_ball.bool())
+        return nbhd_abq, nbhd_vals, (nbhd_mask&valid_within_ball.bool()), nbhd_idx
 
     def forward(self, inp):
         """inputs: [pairs_abq (bs,n,n,d)], [inp_vals (bs,n,ci)]), [query_indices (bs,m)]
            outputs [subsampled_abq (bs,m,m,d)], [convolved_vals (bs,m,co)]"""
-        sub_abq, sub_vals, sub_mask, query_indices = self.subsample(inp, withquery = self.attend_self)
-        nbhd_abq, nbhd_vals, nbhd_mask = self.extract_neighborhood(inp, query_indices)
+        sub_abq, sub_vals, sub_mask, query_indices = self.subsample(inp, withquery = True)
+        nbhd_abq, nbhd_vals, nbhd_mask, nbhd_indices = self.extract_neighborhood(inp, query_indices)
 
-        h = self.heads
+        h, b, n, d, device = self.heads, *sub_vals.shape, sub_vals.device
+
         q = self.to_q(sub_vals)
         k = self.to_k(nbhd_vals)
         v = self.to_v(nbhd_vals)
@@ -219,6 +219,12 @@ class LieSelfAttention(nn.Module):
 
         mask_value = -torch.finfo(sim.dtype).max
         sim.masked_fill_(~rearrange(nbhd_mask, 'b n m -> b () n m'), mask_value)
+
+        if not self.attend_self:
+            seq = torch.arange(n, device = device)
+            seq = rearrange(seq, 'n -> () n ()')
+            mask = (seq == nbhd_indices)
+            sim.masked_fill_(mask, TOKEN_SELF_ATTN_VALUE)
 
         attn = sim.softmax(dim = -1)
         out = einsum('b h i j, b h i j d -> b h i d', attn, v)
@@ -278,9 +284,24 @@ class LieTransformer(nn.Module):
         [liftsamples] number of samples to use in lifting. 1 for all groups with trivial stabilizer. Otherwise 2+
         [Group] Chosen group to be equivariant to.
         """
-    def __init__(self, dim, ds_frac=1, num_outputs=1, k=1536, nbhd=float('inf'),
-                num_layers=2, mean=True, per_point=True,pool=True,
-                liftsamples=4, fill=1/4, group=SE3(),knn=False,cache=False, **kwargs):
+    def __init__(
+        self,
+        dim,
+        ds_frac=1,
+        num_outputs=1,
+        k=1536,
+        nbhd=128,
+        num_layers=2,
+        mean=True,
+        per_point=True,
+        pool=True,
+        liftsamples=4,
+        fill=1/4,
+        group=SE3(),
+        knn=False,
+        cache=False,
+        **kwargs
+    ):
         super().__init__()
         if isinstance(fill,(float,int)):
             fill = [fill]*num_layers
