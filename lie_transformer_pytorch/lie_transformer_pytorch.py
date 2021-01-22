@@ -3,11 +3,14 @@ import torch
 import torch.nn.functional as F
 from torch import nn, einsum
 
-from lie_conv.utils import FarthestSubsample
 from lie_conv.lieGroups import SE3
 
 from functools import partial
 from einops import rearrange
+
+# constants
+
+TOKEN_SELF_ATTN_VALUE = -5e4 # carefully set for half precision to work
 
 # helpers
 
@@ -108,7 +111,23 @@ class GlobalPool(nn.Module):
 # lie attention
 
 class LieSelfAttention(nn.Module):
-    def __init__(self,chin, mc_samples=32,xyz_dim=3,ds_frac=1,knn_channels=None,act='swish',bn=False,mean=False,group=SE3,fill=1/3,cache=False,knn=False, dim_head = 64, heads = 8, **kwargs):
+    def __init__(
+        self,
+        chin,
+        mc_samples=32,
+        xyz_dim=3,
+        ds_frac=1,
+        knn_channels=None,
+        mean=False,
+        group=SE3,
+        fill=1/3,
+        cache=False,
+        knn=False,
+        dim_head = 64,
+        heads = 8,
+        attend_self = True,
+        **kwargs
+    ):
         super().__init__()
         self.chin = chin # input channels
         self.cmco_ci = 16 # a hyperparameter controlling size and bottleneck compute cost of weightnet
@@ -130,6 +149,7 @@ class LieSelfAttention(nn.Module):
 
         inner_dim = dim_head * heads
         self.heads = heads
+        self.attend_self = attend_self
 
         self.to_q = nn.Linear(chin, inner_dim, bias = False)
         self.to_k = nn.Linear(chin, inner_dim, bias = False)
@@ -188,7 +208,7 @@ class LieSelfAttention(nn.Module):
     def forward(self, inp):
         """inputs: [pairs_abq (bs,n,n,d)], [inp_vals (bs,n,ci)]), [query_indices (bs,m)]
            outputs [subsampled_abq (bs,m,m,d)], [convolved_vals (bs,m,co)]"""
-        sub_abq, sub_vals, sub_mask, query_indices = self.subsample(inp, withquery=True)
+        sub_abq, sub_vals, sub_mask, query_indices = self.subsample(inp, withquery = self.attend_self)
         nbhd_abq, nbhd_vals, nbhd_mask = self.extract_neighborhood(inp, query_indices)
 
         h = self.heads
