@@ -23,11 +23,11 @@ model = LieTransformer(
     dim_head = 64
 )
 
-x = torch.randn(1, 64, 512)
 coors = torch.randn(1, 64, 3)
+features = torch.randn(1, 64, 512)
 mask = torch.ones(1, 64).bool()
 
-out = model((coors, x, mask)) # (1, 1)
+out = model((coors, features, mask)) # (1, 1)
 ```
 
 ## Credit
