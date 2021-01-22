@@ -61,15 +61,17 @@ def FPSindices(dists,frac,mask):
 
 
 class FPSsubsample(nn.Module):
-    def __init__(self,ds_frac,cache=False,group=None):
+    def __init__(self, ds_frac, cache=False, group=None):
         super().__init__()
         self.ds_frac = ds_frac
         self.cache=cache
         self.cached_indices = None
         self.group = group
+
     def forward(self,inp,withquery=False):
         abq_pairs,vals,mask = inp
         dist = self.group.distance if self.group else lambda ab: ab.norm(dim=-1)
+
         if self.ds_frac!=1:
             if self.cache and self.cached_indices is None:
                 query_idx = self.cached_indices = FPSindices(dist(abq_pairs),self.ds_frac,mask).detach()
@@ -86,8 +88,13 @@ class FPSsubsample(nn.Module):
             subsampled_values = vals
             subsampled_mask = mask
             query_idx = None
-        if withquery: return (subsampled_abq_pairs,subsampled_values,subsampled_mask, query_idx)
-        return (subsampled_abq_pairs,subsampled_values,subsampled_mask)
+
+        ret = (subsampled_abq_pairs,subsampled_values,subsampled_mask)
+
+        if withquery:
+            ret = (*ret, query_idx)
+
+        return ret
 
 class GlobalPool(nn.Module):
     """computes values reduced over all spatial locations (& group elements) in the mask"""
@@ -98,8 +105,8 @@ class GlobalPool(nn.Module):
     def forward(self,x):
         """x [xyz (bs,n,d), vals (bs,n,c), mask (bs,n)]"""
         if len(x)==2: return x[1].mean(1)
-        coords, vals,mask = x
-        summed = torch.where(mask.unsqueeze(-1),vals,torch.zeros_like(vals)).sum(1)
+        coords, vals, mask = x
+        summed = vals.masked_fill_(~mask[..., None], 0.).sum(dim = 1)
         if self.mean:
             summed /= mask.sum(-1).unsqueeze(-1)
         return summed
@@ -290,10 +297,10 @@ class LieTransformer(nn.Module):
         heads = 8,
         dim_head = 64,
         depth = 2,
-        ds_frac=1,
-        num_outputs=1,
-        k=1536,
-        nbhd=128,
+        ds_frac = 1,
+        dim_out = 1,
+        k = 1536,
+        nbhd = 128,
         mean = True,
         per_point = True,
         pool = True,
@@ -320,7 +327,7 @@ class LieTransformer(nn.Module):
             Pass(nn.Linear(dim, dim)), #embedding layer
             *[block(dim, fill[i]) for i in range(depth)],
             Pass(nn.LayerNorm(dim)),
-            Pass(nn.Linear(dim, num_outputs)),
+            Pass(nn.Linear(dim, dim_out)),
             GlobalPool(mean=mean) if pool else Lambda(lambda x: x[1]),
         )
 
