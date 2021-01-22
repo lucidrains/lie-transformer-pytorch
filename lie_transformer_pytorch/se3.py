@@ -1,5 +1,6 @@
-import torch
 from math import pi
+import torch
+from einops import rearrange
 
 class LieGroup(object):
     """ The abstract Lie Group requiring additional implementation of exp,log, and lifted_elems
