@@ -4,6 +4,30 @@
 
 Implementation of <a href="https://arxiv.org/abs/2012.10885">Lie Transformer</a>, Equivariant Self-Attention, in Pytorch. Only the SE3 version will be present in this repository, as it may be needed for Alphafold2 replication.
 
+## Install
+
+```bash
+$ pip install lie-transformer-pytorch
+```
+
+## Usage
+
+```python
+import torch
+from lie_transformer_pytorch import LieTransformer
+
+model = LieTransformer(
+	dim = 512,
+	num_layers = 1
+)
+
+x = torch.randn(1, 64, 512)
+coors = torch.randn(1, 64, 3)
+mask = torch.ones(1, 64).bool()
+
+out = model((coors, x, mask)) # (1, 1)
+```
+
 ## Citations
 
 ```bibtex

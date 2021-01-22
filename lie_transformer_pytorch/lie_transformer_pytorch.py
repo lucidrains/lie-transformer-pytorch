@@ -3,7 +3,7 @@ import torch
 import torch.nn.functional as F
 from torch import nn, einsum
 
-from lie_conv.lieGroups import SE3
+from lie_transformer_pytorch.se3 import SE3
 
 from functools import partial
 from einops import rearrange
@@ -16,10 +16,6 @@ TOKEN_SELF_ATTN_VALUE = -5e4 # carefully set for half precision to work
 
 def exists(val):
     return val is not None
-
-def index_select(values, indices):
-    last_dim = values.shape[-1]
-    return values.gather(1, indices[:, :, None].expand(-1, -1, last_dim))
 
 # helper classes
 
@@ -284,7 +280,7 @@ class LieTransformer(nn.Module):
         """
     def __init__(self, dim, ds_frac=1, num_outputs=1, k=1536, nbhd=float('inf'),
                 num_layers=2, mean=True, per_point=True,pool=True,
-                liftsamples=4, fill=1/4, group=None,knn=False,cache=False, **kwargs):
+                liftsamples=4, fill=1/4, group=SE3(),knn=False,cache=False, **kwargs):
         super().__init__()
         if isinstance(fill,(float,int)):
             fill = [fill]*num_layers
