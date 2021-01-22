@@ -1,3 +1,5 @@
+<img src="./diagram.png" width="500px"></img>
+
 ## Lie Transformer - Pytorch (wip)
 
 Implementation of <a href="https://arxiv.org/abs/2012.10885">Lie Transformer</a>, Equivariant Self-Attention, in Pytorch. Only the SE3 version will be present in this repository, as it may be needed for Alphafold2 replication.
