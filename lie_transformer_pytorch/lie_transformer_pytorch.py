@@ -122,6 +122,7 @@ class LieSelfAttention(nn.Module):
         mc_samples=32,
         xyz_dim=3,
         ds_frac=1,
+        loc_attn = False,
         knn_channels=None,
         mean=False,
         group=SE3,
@@ -159,6 +160,12 @@ class LieSelfAttention(nn.Module):
         self.to_k = nn.Linear(chin, inner_dim, bias = False)
         self.to_v = nn.Linear(chin, inner_dim, bias = False)
         self.to_out = nn.Linear(inner_dim, chin)
+
+        self.loc_attn_mlp = nn.Sequential(
+            nn.Linear(self.group.lie_dim, self.group.lie_dim * 4),
+            nn.ReLU(),
+            nn.Linear(self.group.lie_dim * 4, 1),
+        ) if loc_attn else None
 
     def extract_neighborhood(self,inp,query_indices):
         """ inputs: [pairs_abq (bs,n,n,d), inp_vals (bs,n,c), mask (bs,n), query_indices (bs,m)]
@@ -225,6 +232,11 @@ class LieSelfAttention(nn.Module):
         k, v = map(lambda t: rearrange(t, 'b n m (h d) -> b h n m d', h = h), (k, v))
 
         sim = einsum('b h i d, b h i j d -> b h i j', q, k) * (q.shape[-1] ** -0.5)
+
+        if exists(self.loc_attn_mlp):
+            loc_attn = self.loc_attn_mlp(nbhd_abq)
+            loc_attn = rearrange(loc_attn, 'b i j () -> b () i j')
+            sim = sim + loc_attn
 
         mask_value = -torch.finfo(sim.dtype).max
 
@@ -300,6 +312,7 @@ class LieTransformer(nn.Module):
         heads = 8,
         dim_head = 64,
         depth = 2,
+        loc_attn = False,
         ds_frac = 1,
         dim_out = 1,
         k = 1536,
@@ -322,7 +335,7 @@ class LieTransformer(nn.Module):
         self.liftsamples = liftsamples
 
         block = lambda dim, fill: nn.Sequential(
-            LieSelfAttentionWrapper(dim, attn = partial(LieSelfAttention, dim, heads = heads, dim_head = dim_head, mc_samples=nbhd, ds_frac=ds_frac, mean=mean, group=group,fill=fill,cache=cache,knn=knn,**kwargs), fill=fill),
+            LieSelfAttentionWrapper(dim, attn = partial(LieSelfAttention, dim, heads = heads, dim_head = dim_head, loc_attn = loc_attn, mc_samples=nbhd, ds_frac=ds_frac, mean=mean, group=group,fill=fill,cache=cache,knn=knn,**kwargs), fill=fill),
             FeedForward(dim)
         )
 
