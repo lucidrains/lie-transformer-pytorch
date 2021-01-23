@@ -48,12 +48,12 @@ def FPSindices(dists,frac,mask):
     chosen_indices = torch.zeros(bs, m, dtype=torch.long,device=device)
     distances = torch.ones(bs, n,device=device) * 1e8
     a = torch.randint(0, n, (bs,), dtype=torch.long,device=device) #choose random start
-    idx = a%mask.sum(-1) + torch.cat([torch.zeros(1,device=device).long(),torch.cumsum(mask.sum(-1),dim=0)[:-1]],dim=0)
+    idx = a%mask.sum(-1) + torch.cat([torch.zeros(1,device=device).long(), torch.cumsum(mask.sum(-1),dim=0)[:-1]],dim=0)
     farthest = torch.where(mask)[1][idx]
     B = torch.arange(bs, dtype=torch.long,device=device)
     for i in range(m):
         chosen_indices[:, i] = farthest # add point that is farthest to chosen
-        dist = torch.where(mask,dists[B,farthest],-100*torch.ones_like(distances)) # (bs,n) compute distance from new point to all others
+        dist = dists[B,farthest].masked_fill(mask, -100) # (bs,n) compute distance from new point to all others
         closer = dist < distances      # if dist from new point is smaller than chosen points so far
         distances[closer] = dist[closer] # update the chosen set's distance to all other points
         farthest = torch.max(distances, -1)[1] # select the point that is farthest from the set
@@ -70,6 +70,8 @@ class FPSsubsample(nn.Module):
 
     def forward(self,inp,withquery=False):
         abq_pairs,vals,mask = inp
+        device = vals.device
+
         dist = self.group.distance if self.group else lambda ab: ab.norm(dim=-1)
 
         if self.ds_frac!=1:
@@ -79,7 +81,7 @@ class FPSsubsample(nn.Module):
                 query_idx = self.cached_indices
             else:
                 query_idx = FPSindices(dist(abq_pairs),self.ds_frac,mask)
-            B = torch.arange(query_idx.shape[0],device=query_idx.device).long()[:,None]
+            B = torch.arange(query_idx.shape[0], device = device).long()[:,None]
             subsampled_abq_pairs = abq_pairs[B,query_idx][B,:,query_idx]
             subsampled_values = vals[B,query_idx]
             subsampled_mask = mask[B,query_idx]
@@ -164,8 +166,10 @@ class LieSelfAttention(nn.Module):
 
         # Subsample pairs_ab, inp_vals, mask to the query_indices
         pairs_abq, inp_vals, mask = inp
+        device = inp_vals.device
+
         if query_indices is not None:
-            B = torch.arange(inp_vals.shape[0],device=inp_vals.device).long()[:,None]
+            B = torch.arange(inp_vals.shape[0], device = device).long()[:,None]
             abq_at_query = pairs_abq[B,query_indices]
             mask_at_query = mask[B,query_indices]
         else:
@@ -173,7 +177,7 @@ class LieSelfAttention(nn.Module):
             mask_at_query = mask
         vals_at_query = inp_vals
         dists = self.group.distance(abq_at_query) #(bs,m,n,d) -> (bs,m,n)
-        dists = torch.where(mask[:,None,:].expand(*dists.shape),dists,1e8*torch.ones_like(dists))
+        dists = dists.masked_fill(mask[:,None,:].expand(*dists.shape), 1e8)
 
         k = min(self.mc_samples,inp_vals.shape[1])
 
@@ -188,14 +192,14 @@ class LieSelfAttention(nn.Module):
             within_ball = (dists < self.r)&mask[:,None,:]&mask_at_query[:,:,None] # (bs,m,n)
             B = torch.arange(bs)[:,None,None]
             M = torch.arange(m)[None,:,None]
-            noise = torch.zeros(bs,m,n,device=within_ball.device)
+            noise = torch.zeros(bs,m,n, device = device)
             noise.uniform_(0,1)
             valid_within_ball, nbhd_idx =torch.topk(within_ball+noise,k,dim=-1,largest=True,sorted=False)
             valid_within_ball = (valid_within_ball>1)
 
         # Retrieve abq_pairs, values, and mask at the nbhd locations
-        B = torch.arange(inp_vals.shape[0],device=inp_vals.device).long()[:,None,None].expand(*nbhd_idx.shape)
-        M = torch.arange(abq_at_query.shape[1],device=inp_vals.device).long()[None,:,None].expand(*nbhd_idx.shape)
+        B = torch.arange(inp_vals.shape[0], device = device).long()[:,None,None].expand(*nbhd_idx.shape)
+        M = torch.arange(abq_at_query.shape[1], device = device).long()[None,:,None].expand(*nbhd_idx.shape)
         nbhd_abq = abq_at_query[B,M,nbhd_idx]     #(bs,m,n,d) -> (bs,m,mc_samples,d)
         nbhd_vals = vals_at_query[B,nbhd_idx]   #(bs,n,c) -> (bs,m,mc_samples,c)
         nbhd_mask = mask[B,nbhd_idx]            #(bs,n) -> (bs,m,mc_samples)
@@ -215,9 +219,7 @@ class LieSelfAttention(nn.Module):
 
         h, b, n, d, device = self.heads, *sub_vals.shape, sub_vals.device
 
-        q = self.to_q(sub_vals)
-        k = self.to_k(nbhd_vals)
-        v = self.to_v(nbhd_vals)
+        q, k, v = self.to_q(sub_vals), self.to_k(nbhd_vals), self.to_v(nbhd_vals)
 
         q = rearrange(q, 'b n (h d) -> b h n d', h = h)
         k, v = map(lambda t: rearrange(t, 'b n m (h d) -> b h n m d', h = h), (k, v))

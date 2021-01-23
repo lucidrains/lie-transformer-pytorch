@@ -34,7 +34,7 @@ out = model((coors, features, mask)) # (1, 1)
 
 ## Todo
 
-- [ ] Figure out location based attention based as described in section 3.2 - any help is appreciated here
+- [ ] Figure out location based attention as described in section 3.2 - any help is appreciated here
 
 ## Credit
 

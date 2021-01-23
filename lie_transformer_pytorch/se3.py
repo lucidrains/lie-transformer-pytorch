@@ -2,6 +2,9 @@ from math import pi
 import torch
 from einops import rearrange, repeat
 
+def to(t):
+    return {'device': t.device, 'dtype': t.dtype}
+
 class LieGroup(object):
     """ The abstract Lie Group requiring additional implementation of exp,log, and lifted_elems
         to use as a new group for LieConv. rep_dim,lie_dim,q_dim should additionally be specified."""
@@ -68,49 +71,13 @@ class LieGroup(object):
         else:
             embedded_locations = paired_a
         return (embedded_locations,expanded_v,expanded_mask)
-    
-    def expand_like(self,v,m,a):
-        nsamples = a.shape[-2]//m.shape[-1]
-        expanded_v = repeat(v, 'b n c -> b n m c', m = nsamples) # (bs,n,c) -> (bs,n,1,c) -> (bs,n,ns,c)
-        expanded_v = rearrange(expanded_v, 'b n m c -> b (n m) c') # (bs,n,ns,c) -> (bs,n*ns,c)
-        expanded_mask = repeat(m, 'b n -> b n m', m = nsamples) # (bs,n) -> (bs,n,ns)
-        expanded_mask = rearrange(expanded_mask, 'b n m -> b (n m)') # (bs,n,ns) -> (bs,n*ns)
-        return expanded_v, expanded_mask
-    
+
     def elems2pairs(self,a):
         """ computes log(e^-b e^a) for all a b pairs along n dimension of input.
             inputs: [a (bs,n,d)] outputs: [pairs_ab (bs,n,n,d)] """
         vinv = self.exp(-a.unsqueeze(-3))
         u = self.exp(a.unsqueeze(-2))
         return self.log(vinv@u)    # ((bs,1,n,d) -> (bs,1,n,r,r))@((bs,n,1,d) -> (bs,n,1,r,r))
-
-    def BCH(self,a,b,order=2):
-        """ Baker Campbell Hausdorff formula"""
-        assert order <= 4, "BCH only supported up to order 4"
-        B = self.bracket
-        z = a+b
-        if order==1: return z
-        ab = B(a,b)
-        z += (1/2)*ab
-        if order==2: return z
-        aab = B(a,ab)
-        bba = B(b,-ab)
-        z += (1/12)*(aab+bba)
-        if order==3: return z
-        baab = B(b,aab)
-        z += -(1/24)*baab
-        return z
-    
-    def bracket(self,a,b):
-        """Computes the lie bracket between a and b, assumes a,b expressed as vectors"""
-        A = self.components2matrix(a)
-        B = self.components2matrix(b)
-        return self.matrix2components(A@B-B@A)
-
-    def __str__(self):
-        return f"{self.__class__}({self.alpha})" if self.alpha!=.2 else f"{self.__class__}"
-    def __repr__(self):
-        return str(self)
 
 # Helper functions for analytic exponential maps. Uses taylor expansions near x=0
 # See http://ethaneade.com/lie_groups.pdf for derivations.
@@ -152,7 +119,7 @@ def sinc_inv(x):
 # Hodge star on R3
 def cross_matrix(k):
     """Application of hodge star on R3, mapping Λ^1 R3 -> Λ^2 R3"""
-    K = torch.zeros(*k.shape[:-1],3,3,device=k.device,dtype=k.dtype)
+    K = torch.zeros(*k.shape[:-1],3,3, **to(k))
     K[...,0,1] = -k[...,2]
     K[...,0,2] = k[...,1]
     K[...,1,0] = k[...,2]
@@ -163,7 +130,7 @@ def cross_matrix(k):
 
 def uncross_matrix(K):
     """Application of hodge star on R3, mapping Λ^2 R3 -> Λ^1 R3"""
-    k = torch.zeros(*K.shape[:-1],device=K.device,dtype=K.dtype)
+    k = torch.zeros(*K.shape[:-1], **to(K))
     k[...,0] = (K[...,2,1] - K[...,1,2])/2
     k[...,1] = (K[...,0,2] - K[...,2,0])/2
     k[...,2] = (K[...,1,0] - K[...,0,1])/2
@@ -200,7 +167,7 @@ class SO3(LieGroup):
     def matrix2components(self,A): # A: (*,rep_dim,rep_dim)
         return uncross_matrix(A)
     
-    def sample(self,*shape,device=torch.device('cuda'),dtype=torch.float32):
+    def sample(self, *shape, device=torch.device('cuda'), dtype=torch.float32):
         q = torch.randn(*shape,4,device=device,dtype=dtype)
         q /= q.norm(dim=-1).unsqueeze(-1)
         theta_2 = torch.atan2(norm(q[...,1:],dim=-1),q[...,0]).unsqueeze(-1)
@@ -252,12 +219,13 @@ class SE3(SO3):
         self.per_point = per_point
 
     def exp(self,w):
+        dd_kwargs = to(w)
         theta = w[...,:3].norm(dim=-1)[...,None,None]
         K = cross_matrix(w[...,:3])
         R = super().exp(w[...,:3])
-        I = torch.eye(3,device=w.device,dtype=w.dtype)
+        I = torch.eye(3, **dd_kwargs)
         V = I + cosc(theta)*K + sincc(theta)*(K@K)
-        U = torch.zeros(*w.shape[:-1],4,4,device=w.device,dtype=w.dtype)
+        U = torch.zeros(*w.shape[:-1],4,4, **dd_kwargs)
         U[...,:3,:3] = R
         U[...,:3,3] = (V@w[...,3:].unsqueeze(-1)).squeeze(-1)
         U[...,3,3] = 1
@@ -291,20 +259,20 @@ class SE3(SO3):
         #return farthest_lift(self,pt,mask,nsamples,alpha)
         # same lifts for each point right now
         bs,n = pt.shape[:2]
-        if self.per_point:
-            q = torch.randn(bs,n,nsamples,4,device=pt.device,dtype=pt.dtype)
-        else:
-            q = torch.randn(bs,1,nsamples,4,device=pt.device,dtype=pt.dtype)
+        dd_kwargs = {'device': pt.device, 'dtype': pt.dtype}
+
+        q = torch.randn(bs,(n if self.per_point else 1),nsamples,4, **dd_kwargs)
         q /= q.norm(dim=-1).unsqueeze(-1)
         theta_2 = torch.atan2(q[...,1:].norm(dim=-1),q[...,0]).unsqueeze(-1)
         so3_elem = 2*sinc_inv(theta_2)*q[...,1:] # (sin(x/2)u -> xu) for x angle and u direction
         se3_elem = torch.cat([so3_elem,torch.zeros_like(so3_elem)],dim=-1)
         R = self.exp(se3_elem)
-        T = torch.zeros(bs,n,nsamples,4,4,device=pt.device,dtype=pt.dtype) # (bs,n,nsamples,4,4)
-        T[...,:,:] = torch.eye(4,device=pt.device,dtype=pt.dtype)
+        T = torch.zeros(bs,n,nsamples,4,4, **dd_kwargs) # (bs,n,nsamples,4,4)
+        T[...,:,:] = torch.eye(4, **dd_kwargs)
         T[...,:3,3] = pt[:,:,None,:] # (bs,n,1,3)
-        a = self.log(T@R)#@R) # bs, n, nsamples, 6
+        a = self.log(T@R) # bs, n, nsamples, 6
         return a.reshape(bs,n*nsamples,6), None
+
     def distance(self,abq_pairs):
         dist_rot = abq_pairs[...,:3].norm(dim=-1)
         dist_trans = abq_pairs[...,3:].norm(dim=-1)
