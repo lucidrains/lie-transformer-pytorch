@@ -55,7 +55,7 @@ class LieGroup(object):
         """assumes p has shape (*,n,2), vals has shape (*,n,c), mask has shape (*,n)
             returns (a,v) with shapes [(*,n*nsamples,lie_dim),(*,n*nsamples,c)"""
         p,v,m = x
-        expanded_a,expanded_q = self.lifted_elems(p,nsamples,**kwargs) # (bs,n*ns,d), (bs,n*ns,qd)
+        expanded_a = self.lifted_elems(p,nsamples,**kwargs) # (bs,n*ns,d), (bs,n*ns,qd)
         nsamples = expanded_a.shape[-2]//m.shape[-1]
         # expand v and mask like q
         expanded_v = repeat(v, 'b n c -> b n m c', m = nsamples) # (bs,n,c) -> (bs,n,1,c) -> (bs,n,ns,c)
@@ -64,12 +64,7 @@ class LieGroup(object):
         expanded_mask = rearrange(expanded_mask, 'b n m -> b (n m)') # (bs,n,ns) -> (bs,n*ns)
         # convert from elems to pairs
         paired_a = self.elems2pairs(expanded_a) #(bs,n*ns,d) -> (bs,n*ns,n*ns,d)
-        if expanded_q is not None:
-            q_in = expanded_q.unsqueeze(-2).expand(*paired_a.shape[:-1],1)
-            q_out = expanded_q.unsqueeze(-3).expand(*paired_a.shape[:-1],1)
-            embedded_locations = torch.cat([paired_a,q_in,q_out],dim=-1)
-        else:
-            embedded_locations = paired_a
+        embedded_locations = paired_a
         return (embedded_locations,expanded_v,expanded_mask)
 
     def elems2pairs(self,a):
@@ -271,7 +266,7 @@ class SE3(SO3):
         T[...,:,:] = torch.eye(4, **dd_kwargs)
         T[...,:3,3] = pt[:,:,None,:] # (bs,n,1,3)
         a = self.log(T@R) # bs, n, nsamples, 6
-        return a.reshape(bs,n*nsamples,6), None
+        return a.reshape(bs,n*nsamples,6)
 
     def distance(self,abq_pairs):
         dist_rot = abq_pairs[...,:3].norm(dim=-1)

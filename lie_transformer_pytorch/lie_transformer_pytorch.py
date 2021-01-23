@@ -227,13 +227,14 @@ class LieSelfAttention(nn.Module):
         sim = einsum('b h i d, b h i j d -> b h i j', q, k) * (q.shape[-1] ** -0.5)
 
         mask_value = -torch.finfo(sim.dtype).max
-        sim.masked_fill_(~rearrange(nbhd_mask, 'b n m -> b () n m'), mask_value)
 
         if not self.attend_self:
             seq = torch.arange(n, device = device)
             seq = rearrange(seq, 'n -> () n ()')
             mask = (seq == nbhd_indices)
             sim.masked_fill_(mask, TOKEN_SELF_ATTN_VALUE)
+
+        sim.masked_fill_(~rearrange(nbhd_mask, 'b n m -> b () n m'), mask_value)
 
         attn = sim.softmax(dim = -1)
         out = einsum('b h i j, b h i j d -> b h i d', attn, v)
