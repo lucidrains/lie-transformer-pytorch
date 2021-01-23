@@ -22,14 +22,15 @@ model = LieTransformer(
     dim = 512,
     depth = 2,
     heads = 8,
-    dim_head = 64
+    dim_head = 64,
+    liftsamples = 4
 )
 
 coors = torch.randn(1, 64, 3)
 features = torch.randn(1, 64, 512)
 mask = torch.ones(1, 64).bool()
 
-out = model((coors, features, mask)) # (1, 1)
+out = model((coors, features, mask)) # (1, 256, 512) <- 256 = (seq len * liftsamples)
 ```
 
 ## Todo

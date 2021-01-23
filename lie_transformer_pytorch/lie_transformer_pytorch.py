@@ -17,6 +17,9 @@ TOKEN_SELF_ATTN_VALUE = -5e4 # carefully set for half precision to work
 def exists(val):
     return val is not None
 
+def default(val, d):
+    return val if exists(val) else d
+
 # helper classes
 
 class Pass(nn.Module):
@@ -39,6 +42,24 @@ class Lambda(nn.Module):
     def forward(self, x):
         return self.fn(x)
 
+
+class GlobalPool(nn.Module):
+    """computes values reduced over all spatial locations (& group elements) in the mask"""
+    def __init__(self,mean=False):
+        super().__init__()
+        self.mean = mean
+
+    def forward(self,x):
+        """x [xyz (bs,n,d), vals (bs,n,c), mask (bs,n)]"""
+        if len(x)==2: return x[1].mean(1)
+        coords, vals, mask = x
+        summed = vals.masked_fill_(~mask[..., None], 0.).sum(dim = 1)
+        if self.mean:
+            summed /= mask.sum(-1).unsqueeze(-1)
+        return summed
+
+# subsampling code
+
 def FPSindices(dists,frac,mask):
     """ inputs: pairwise distances DISTS (bs,n,n), downsample_frac (float), valid atom mask (bs,n)
         outputs: chosen_indices (bs,m) """
@@ -50,13 +71,15 @@ def FPSindices(dists,frac,mask):
     a = torch.randint(0, n, (bs,), dtype=torch.long,device=device) #choose random start
     idx = a%mask.sum(-1) + torch.cat([torch.zeros(1,device=device).long(), torch.cumsum(mask.sum(-1),dim=0)[:-1]],dim=0)
     farthest = torch.where(mask)[1][idx]
-    B = torch.arange(bs, dtype=torch.long,device=device)
+    B = torch.arange(bs, dtype=torch.long,device=device)\
+
     for i in range(m):
         chosen_indices[:, i] = farthest # add point that is farthest to chosen
         dist = dists[B,farthest].masked_fill(mask, -100) # (bs,n) compute distance from new point to all others
         closer = dist < distances      # if dist from new point is smaller than chosen points so far
         distances[closer] = dist[closer] # update the chosen set's distance to all other points
         farthest = torch.max(distances, -1)[1] # select the point that is farthest from the set
+
     return chosen_indices
 
 
@@ -97,21 +120,6 @@ class FPSsubsample(nn.Module):
             ret = (*ret, query_idx)
 
         return ret
-
-class GlobalPool(nn.Module):
-    """computes values reduced over all spatial locations (& group elements) in the mask"""
-    def __init__(self,mean=False):
-        super().__init__()
-        self.mean = mean
-
-    def forward(self,x):
-        """x [xyz (bs,n,d), vals (bs,n,c), mask (bs,n)]"""
-        if len(x)==2: return x[1].mean(1)
-        coords, vals, mask = x
-        summed = vals.masked_fill_(~mask[..., None], 0.).sum(dim = 1)
-        if self.mean:
-            summed /= mask.sum(-1).unsqueeze(-1)
-        return summed
 
 # lie attention
 
@@ -314,12 +322,11 @@ class LieTransformer(nn.Module):
         depth = 2,
         loc_attn = False,
         ds_frac = 1,
-        dim_out = 1,
+        dim_out = None,
         k = 1536,
         nbhd = 128,
         mean = True,
         per_point = True,
-        pool = True,
         liftsamples = 4,
         fill = 1/4,
         knn = False,
@@ -327,6 +334,8 @@ class LieTransformer(nn.Module):
         **kwargs
     ):
         super().__init__()
+        dim_out = default(dim_out, dim)
+
         if isinstance(fill,(float,int)):
             fill = [fill] * depth
 
@@ -343,10 +352,17 @@ class LieTransformer(nn.Module):
             Pass(nn.Linear(dim, dim)), #embedding layer
             *[block(dim, fill[i]) for i in range(depth)],
             Pass(nn.LayerNorm(dim)),
-            Pass(nn.Linear(dim, dim_out)),
-            GlobalPool(mean=mean) if pool else Lambda(lambda x: x[1]),
+            Pass(nn.Linear(dim, dim_out))
         )
 
-    def forward(self, x):
+        self.pool = GlobalPool(mean=mean)
+
+    def forward(self, x, pool = False):
         lifted_x = self.group.lift(x, self.liftsamples)
-        return self.net(lifted_x)
+        out = self.net(lifted_x)
+
+        if not pool:
+            _, features, _ = out
+            return features
+
+        return self.pool(out)
