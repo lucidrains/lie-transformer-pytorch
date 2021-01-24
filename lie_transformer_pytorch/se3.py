@@ -4,7 +4,7 @@ from einops import rearrange, repeat
 
 # constants
 
-THRES =7e-2
+THRES = 7e-2
 
 # helper functions
 
@@ -164,7 +164,7 @@ class SE3(SO3):
     
     def log(self,U):
         w = super().log(U[...,:3,:3])
-        I = torch.eye(3,device=w.device,dtype=w.dtype)
+        I = torch.eye(3, **to(w))
         K = cross_matrix(w[...,:3])
         theta = w.norm(dim=-1)[...,None,None]#%(2*pi)
         #theta[theta>pi] -= 2*pi
@@ -174,23 +174,13 @@ class SE3(SO3):
         #assert not torch.any(torch.isnan(u)), f"nans in u log {torch.isnan(u).sum()}, {torch.where(torch.isnan(u))}"
         return torch.cat([w,u],dim=-1)
 
-    
-    def components2matrix(self,a): # a: (*,3)
-        A = torch.zeros(*a.shape[:-1],4,4,device=a.device,dtype=a.dtype)
-        A[...,:3,:3] = cross_matrix(a[...,:3])
-        A[...,:3,3] = a[...,3:]
-        return A
-    
-    def matrix2components(self,A): # A: (*,4,4)
-        return torch.cat([uncross_matrix(A[...,:3,:3]),A[...,:3,3]],dim=-1)
-
     def lifted_elems(self,pt,nsamples):
         """ pt (bs,n,D) mask (bs,n), per_point specifies whether to
             use a different group element per atom in the molecule"""
         #return farthest_lift(self,pt,mask,nsamples,alpha)
         # same lifts for each point right now
         bs,n = pt.shape[:2]
-        dd_kwargs = {'device': pt.device, 'dtype': pt.dtype}
+        dd_kwargs = to(pt)
 
         q = torch.randn(bs,(n if self.per_point else 1),nsamples,4, **dd_kwargs)
         q /= q.norm(dim=-1).unsqueeze(-1)

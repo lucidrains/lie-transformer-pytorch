@@ -74,11 +74,11 @@ def FPSindices(dists,frac,mask):
     B = torch.arange(bs, dtype=torch.long,device=device)\
 
     for i in range(m):
-        chosen_indices[:, i] = farthest # add point that is farthest to chosen
+        chosen_indices[:, i] = farthest                  # add point that is farthest to chosen
         dist = dists[B,farthest].masked_fill(mask, -100) # (bs,n) compute distance from new point to all others
-        closer = dist < distances      # if dist from new point is smaller than chosen points so far
-        distances[closer] = dist[closer] # update the chosen set's distance to all other points
-        farthest = torch.max(distances, -1)[1] # select the point that is farthest from the set
+        closer = dist < distances                        # if dist from new point is smaller than chosen points so far
+        distances[closer] = dist[closer]                 # update the chosen set's distance to all other points
+        farthest = torch.max(distances, -1)[1]           # select the point that is farthest from the set
 
     return chosen_indices
 
@@ -264,22 +264,20 @@ class LieSelfAttention(nn.Module):
         return sub_abq, combined, sub_mask
 
 class LieSelfAttentionWrapper(nn.Module):
-    """ A bottleneck residual block as described in figure 5"""
-    def __init__(self,chin, attn, fill=None):
+    def __init__(self, dim, attn):
         super().__init__()
+        self.dim = dim
         self.attn = attn()
 
         self.net = nn.Sequential(
-            Pass(nn.LayerNorm(chin)),
+            Pass(nn.LayerNorm(dim)),
             self.attn
         )
-
-        self.chin = chin
 
     def forward(self,inp):
         sub_coords, sub_values, mask = self.attn.subsample(inp)
         new_coords, new_values, mask = self.net(inp)
-        new_values[...,:self.chin] += sub_values
+        new_values[...,:self.dim] += sub_values
         return new_coords, new_values, mask
 
 class FeedForward(nn.Module):
@@ -344,12 +342,12 @@ class LieTransformer(nn.Module):
         self.liftsamples = liftsamples
 
         block = lambda dim, fill: nn.Sequential(
-            LieSelfAttentionWrapper(dim, attn = partial(LieSelfAttention, dim, heads = heads, dim_head = dim_head, loc_attn = loc_attn, mc_samples=nbhd, ds_frac=ds_frac, mean=mean, group=group,fill=fill,cache=cache,knn=knn,**kwargs), fill=fill),
+            LieSelfAttentionWrapper(dim, attn = partial(LieSelfAttention, dim, heads = heads, dim_head = dim_head, loc_attn = loc_attn, mc_samples=nbhd, ds_frac=ds_frac, mean=mean, group=group,fill=fill,cache=cache,knn=knn,**kwargs)),
             FeedForward(dim)
         )
 
         self.net = nn.Sequential(
-            Pass(nn.Linear(dim, dim)), #embedding layer
+            Pass(nn.Linear(dim, dim)), # embedding layer
             *[block(dim, fill[i]) for i in range(depth)],
             Pass(nn.LayerNorm(dim)),
             Pass(nn.Linear(dim, dim_out))
