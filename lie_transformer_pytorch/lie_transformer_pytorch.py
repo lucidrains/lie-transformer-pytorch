@@ -20,6 +20,22 @@ def exists(val):
 def default(val, d):
     return val if exists(val) else d
 
+def batched_index_select(values, indices, dim = 1):
+    value_dims = values.shape[(dim + 1):]
+    values_shape, indices_shape = map(lambda t: list(t.shape), (values, indices))
+    indices = indices[(..., *((None,) * len(value_dims)))]
+    indices = indices.expand(*((-1,) * len(indices_shape)), *value_dims)
+    value_expand_len = len(indices_shape) - (dim + 1)
+    values = values[(*((slice(None),) * dim), *((None,) * value_expand_len), ...)]
+
+    value_expand_shape = [-1] * len(values.shape)
+    expand_slice = slice(dim, (dim + value_expand_len))
+    value_expand_shape[expand_slice] = indices.shape[expand_slice]
+    values = values.expand(*value_expand_shape)
+
+    dim += value_expand_len
+    return values.gather(dim, indices)
+
 # helper classes
 
 class Pass(nn.Module):
@@ -60,22 +76,21 @@ class GlobalPool(nn.Module):
 
 # subsampling code
 
-def FPSindices(dists,frac,mask):
+def FPSindices(dists, frac, mask):
     """ inputs: pairwise distances DISTS (bs,n,n), downsample_frac (float), valid atom mask (bs,n)
         outputs: chosen_indices (bs,m) """
     m = int(round(frac * dists.shape[1]))
-    device = dists.device
-    bs,n = dists.shape[:2]
-    chosen_indices = torch.zeros(bs, m, dtype=torch.long,device=device)
+    bs, n, device = *dists.shape[:2], dists.device
+
+    chosen_indices = torch.zeros(bs, m, dtype=torch.long, device=device)
     distances = torch.ones(bs, n,device=device) * 1e8
-    a = torch.randint(0, n, (bs,), dtype=torch.long,device=device) #choose random start
-    idx = a%mask.sum(-1) + torch.cat([torch.zeros(1,device=device).long(), torch.cumsum(mask.sum(-1),dim=0)[:-1]],dim=0)
+    a = torch.randint(0, n, (bs,), dtype=torch.long, device=device) #choose random start
+    idx = a % mask.sum(-1) + torch.cat([torch.zeros(1, device=device).long(), torch.cumsum(mask.sum(-1),dim=0)[:-1]],dim=0)
     farthest = torch.where(mask)[1][idx]
-    B = torch.arange(bs, dtype=torch.long,device=device)\
 
     for i in range(m):
         chosen_indices[:, i] = farthest                  # add point that is farthest to chosen
-        dist = dists[B,farthest].masked_fill(mask, -100) # (bs,n) compute distance from new point to all others
+        dist = batched_index_select(dists, farthest, dim = 1).masked_fill(mask, -100) # (bs,n) compute distance from new point to all others
         closer = dist < distances                        # if dist from new point is smaller than chosen points so far
         distances[closer] = dist[closer]                 # update the chosen set's distance to all other points
         farthest = torch.max(distances, -1)[1]           # select the point that is farthest from the set
@@ -87,34 +102,45 @@ class FPSsubsample(nn.Module):
     def __init__(self, ds_frac, cache=False, group=None):
         super().__init__()
         self.ds_frac = ds_frac
-        self.cache=cache
+        self.cache = cache
         self.cached_indices = None
         self.group = group
 
-    def forward(self,inp,withquery=False):
+    def get_query_indices(self, abq_pairs, mask):
+        if self.cache and exists(self.cached_indices):
+            return self.cached_indices
+
+        value = FPSindices(dist(abq_pairs), self.ds_frac, mask).detach()
+
+        if self.cache:
+            self.cached_indices = value
+
+        return value
+
+    def forward(self, inp, withquery=False):
         abq_pairs,vals,mask = inp
         device = vals.device
 
         dist = self.group.distance if self.group else lambda ab: ab.norm(dim=-1)
 
         if self.ds_frac!=1:
-            if self.cache and self.cached_indices is None:
-                query_idx = self.cached_indices = FPSindices(dist(abq_pairs),self.ds_frac,mask).detach()
-            elif self.cache:
-                query_idx = self.cached_indices
-            else:
-                query_idx = FPSindices(dist(abq_pairs),self.ds_frac,mask)
+            query_idx = get_query_indices(abq_pairs, mask)
+
             B = torch.arange(query_idx.shape[0], device = device).long()[:,None]
-            subsampled_abq_pairs = abq_pairs[B,query_idx][B,:,query_idx]
-            subsampled_values = vals[B,query_idx]
-            subsampled_mask = mask[B,query_idx]
+            subsampled_abq_pairs = abq_pairs[B, query_idx][B, :, query_idx]
+            subsampled_values = batched_index_select(vals, query_idx, dim = 1)
+            subsampled_mask = batched_index_select(mask, query_idx, dim = 1)
         else:
             subsampled_abq_pairs = abq_pairs
             subsampled_values = vals
             subsampled_mask = mask
             query_idx = None
 
-        ret = (subsampled_abq_pairs,subsampled_values,subsampled_mask)
+        ret = (
+            subsampled_abq_pairs,
+            subsampled_values,
+            subsampled_mask
+        )
 
         if withquery:
             ret = (*ret, query_idx)
@@ -127,16 +153,16 @@ class LieSelfAttention(nn.Module):
     def __init__(
         self,
         chin,
-        mc_samples=32,
-        xyz_dim=3,
-        ds_frac=1,
+        mc_samples = 32,
+        xyz_dim = 3,
+        ds_frac = 1,
         loc_attn = False,
-        knn_channels=None,
-        mean=False,
-        group=SE3,
-        fill=1/3,
-        cache=False,
-        knn=False,
+        knn_channels = None,
+        mean = False,
+        group = SE3,
+        fill = 1/3,
+        cache = False,
+        knn = False,
         dim_head = 64,
         heads = 8,
         attend_self = True,
@@ -184,12 +210,12 @@ class LieSelfAttention(nn.Module):
         device = inp_vals.device
 
         if query_indices is not None:
-            B = torch.arange(inp_vals.shape[0], device = device).long()[:,None]
-            abq_at_query = pairs_abq[B,query_indices]
-            mask_at_query = mask[B,query_indices]
+            abq_at_query = batched_index_select(pairs_abq, query_indices, dim = 1)
+            mask_at_query = batched_index_select(mask, query_indices, dim = 1)
         else:
             abq_at_query = pairs_abq
             mask_at_query = mask
+
         vals_at_query = inp_vals
         dists = self.group.distance(abq_at_query) #(bs,m,n,d) -> (bs,m,n)
         dists = dists.masked_fill(mask[:,None,:].expand(*dists.shape), 1e8)
@@ -203,28 +229,27 @@ class LieSelfAttention(nn.Module):
             assert not torch.any(nbhd_idx>dists.shape[-1]), f"error with topk,\
                         nbhd{k} nans|inf{torch.any(torch.isnan(dists)|torch.isinf(dists))}"
         else: # NBHD: Sampled Distance Ball
-            bs,m,n = dists.shape
-            within_ball = (dists < self.r)&mask[:,None,:]&mask_at_query[:,:,None] # (bs,m,n)
-            B = torch.arange(bs)[:,None,None]
-            M = torch.arange(m)[None,:,None]
-            noise = torch.zeros(bs,m,n, device = device)
-            noise.uniform_(0,1)
-            valid_within_ball, nbhd_idx =torch.topk(within_ball+noise,k,dim=-1,largest=True,sorted=False)
-            valid_within_ball = (valid_within_ball>1)
+            bs, m, n = dists.shape
+            within_ball = (dists < self.r) & mask[:,None,:] & mask_at_query[:,:,None] # (bs,m,n)
+            noise = torch.zeros((bs, m, n), device = device).uniform_(0, 1)
+            valid_within_ball, nbhd_idx =torch.topk(within_ball + noise, k, dim=-1, sorted=False)
+            valid_within_ball = (valid_within_ball > 1)
 
         # Retrieve abq_pairs, values, and mask at the nbhd locations
-        B = torch.arange(inp_vals.shape[0], device = device).long()[:,None,None].expand(*nbhd_idx.shape)
-        M = torch.arange(abq_at_query.shape[1], device = device).long()[None,:,None].expand(*nbhd_idx.shape)
-        nbhd_abq = abq_at_query[B,M,nbhd_idx]     #(bs,m,n,d) -> (bs,m,mc_samples,d)
-        nbhd_vals = vals_at_query[B,nbhd_idx]   #(bs,n,c) -> (bs,m,mc_samples,c)
-        nbhd_mask = mask[B,nbhd_idx]            #(bs,n) -> (bs,m,mc_samples)
+
+        nbhd_abq = batched_index_select(abq_at_query, nbhd_idx, dim = 2)
+        nbhd_vals = batched_index_select(vals_at_query, nbhd_idx, dim = 1)
+        nbhd_mask = batched_index_select(mask, nbhd_idx, dim = 1)
 
         if self.training and not self.knn: # update ball radius to match fraction fill_frac inside
-            navg = (within_ball.float()).sum(-1).sum()/mask_at_query[:,:,None].sum()
-            avg_fill = (navg/mask.sum(-1).float().mean()).cpu().item()
-            self.r +=  self.coeff*(self.fill_frac - avg_fill)
-            self.fill_frac_ema += .1*(avg_fill-self.fill_frac_ema)
-        return nbhd_abq, nbhd_vals, (nbhd_mask&valid_within_ball.bool()), nbhd_idx
+            navg = (within_ball.float()).sum(-1).sum() / mask_at_query[:, :, None].sum()
+            avg_fill = (navg / mask.sum(-1).float().mean()).cpu().item()
+            self.r +=  self.coeff * (self.fill_frac - avg_fill)
+            self.fill_frac_ema += .1 * (avg_fill-self.fill_frac_ema)
+
+        nbhd_mask &= valid_within_ball.bool()
+
+        return nbhd_abq, nbhd_vals, nbhd_mask, nbhd_idx
 
     def forward(self, inp):
         """inputs: [pairs_abq (bs,n,n,d)], [inp_vals (bs,n,ci)]), [query_indices (bs,m)]
