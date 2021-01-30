@@ -1,5 +1,6 @@
 from math import pi
 import torch
+from torch import acos, atan2, cos, sin
 from einops import rearrange, repeat
 
 # constants
@@ -38,8 +39,8 @@ def coscc(x):
     #assert not torch.any(torch.isinf(x2)), f"infs in x2 log"
     usetaylor = (x.abs()<THRES)
     texpand = 1/12*(1+x2/60*(1+x2/42*(1+x2/40)))
-    costerm = (2*(1-x.cos())).clamp(min=1e-6)
-    full = (1-x*x.sin()/costerm)/x**2 #Nans can come up here when cos = 1
+    costerm = (2*(1-cos(x))).clamp(min=1e-6)
+    full = (1-x*sin(x)/costerm)/x**2 #Nans can come up here when cos = 1
     output = torch.where(usetaylor,texpand,full)
     return output
 
@@ -90,7 +91,7 @@ class SO3:
             where components 1,2,3 are the generators for xrot,yrot,zrot"""
         theta = w.norm(dim=-1)[...,None,None]
         K = cross_matrix(w)
-        I = torch.eye(3,device=K.device,dtype=K.dtype)
+        I = torch.eye(3, **to(K))
         Rs = I + K*sinc(theta) + (K@K)*cosc(theta)
         return Rs
     
@@ -102,7 +103,7 @@ class SO3:
             Output [coeffs of log(u) in basis (*,d)] """
         trR = R[...,0,0]+R[...,1,1]+R[...,2,2]
         costheta = ((trR-1)/2).clamp(max=1,min=-1).unsqueeze(-1)
-        theta = torch.acos(costheta)
+        theta = acos(costheta)
         logR = uncross_matrix(R)*sinc_inv(theta)
         return logR
 
@@ -113,7 +114,7 @@ class SO3:
     def sample(self, *shape, device=torch.device('cuda'), dtype=torch.float32):
         q = torch.randn(*shape,4,device=device,dtype=dtype)
         q /= q.norm(dim=-1).unsqueeze(-1)
-        theta_2 = torch.atan2(norm(q[...,1:],dim=-1),q[...,0]).unsqueeze(-1)
+        theta_2 = atan2(norm(q[...,1:],dim=-1),q[...,0]).unsqueeze(-1)
         so3_elem = 2*sinc_inv(theta_2)*q[...,1:] # # (sin(x/2)u -> xu) for x angle and u direction
         R = self.exp(so3_elem)
         return R
@@ -184,7 +185,7 @@ class SE3(SO3):
 
         q = torch.randn(bs,(n if self.per_point else 1),nsamples,4, **dd_kwargs)
         q /= q.norm(dim=-1).unsqueeze(-1)
-        theta_2 = torch.atan2(q[...,1:].norm(dim=-1),q[...,0]).unsqueeze(-1)
+        theta_2 = atan2(q[...,1:].norm(dim=-1),q[...,0]).unsqueeze(-1)
         so3_elem = 2*sinc_inv(theta_2)*q[...,1:] # (sin(x/2)u -> xu) for x angle and u direction
         se3_elem = torch.cat([so3_elem,torch.zeros_like(so3_elem)],dim=-1)
         R = self.exp(se3_elem)
