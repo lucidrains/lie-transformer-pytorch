@@ -89,10 +89,10 @@ class SO3:
 
         """ Rodriguez's formula, assuming shape (*,3)
             where components 1,2,3 are the generators for xrot,yrot,zrot"""
-        theta = w.norm(dim=-1)[...,None,None]
+        theta = w.norm(dim=-1)[..., None, None]
         K = cross_matrix(w)
         I = torch.eye(3, **to(K))
-        Rs = I + K*sinc(theta) + (K@K)*cosc(theta)
+        Rs = I + K * sinc(theta) + (K @ K) * cosc(theta)
         return Rs
     
     def log(self,R):
@@ -101,23 +101,15 @@ class SO3:
         """ Computes (matrix) logarithm for collection of matrices and converts to Lie algebra basis.
             Input [u (*,rep_dim,rep_dim)]
             Output [coeffs of log(u) in basis (*,d)] """
-        trR = R[...,0,0]+R[...,1,1]+R[...,2,2]
-        costheta = ((trR-1)/2).clamp(max=1,min=-1).unsqueeze(-1)
+        trR = R[..., 0, 0] + R[..., 1, 1] + R[..., 2, 2]
+        costheta = ((trR-1) / 2).clamp(max=1,min=-1).unsqueeze(-1)
         theta = acos(costheta)
-        logR = uncross_matrix(R)*sinc_inv(theta)
+        logR = uncross_matrix(R) * sinc_inv(theta)
         return logR
 
     def inv(self,g):
         """ We can compute the inverse of elements g (*,rep_dim,rep_dim) as exp(-log(g))"""
         return self.exp(-self.log(g))
-
-    def sample(self, *shape, device=torch.device('cuda'), dtype=torch.float32):
-        q = torch.randn(*shape,4,device=device,dtype=dtype)
-        q /= q.norm(dim=-1).unsqueeze(-1)
-        theta_2 = atan2(norm(q[...,1:],dim=-1),q[...,0]).unsqueeze(-1)
-        so3_elem = 2*sinc_inv(theta_2)*q[...,1:] # # (sin(x/2)u -> xu) for x angle and u direction
-        R = self.exp(so3_elem)
-        return R
 
     def elems2pairs(self,a):
         """ computes log(e^-b e^a) for all a b pairs along n dimension of input.
@@ -164,16 +156,16 @@ class SE3(SO3):
         return U
     
     def log(self,U):
-        w = super().log(U[...,:3,:3])
+        w = super().log(U[..., :3, :3])
         I = torch.eye(3, **to(w))
-        K = cross_matrix(w[...,:3])
-        theta = w.norm(dim=-1)[...,None,None]#%(2*pi)
+        K = cross_matrix(w[..., :3])
+        theta = w.norm(dim=-1)[..., None, None]#%(2*pi)
         #theta[theta>pi] -= 2*pi
         cosccc = coscc(theta)
         Vinv = I - K/2 + cosccc*(K@K)
-        u = (Vinv@U[...,:3,3].unsqueeze(-1)).squeeze(-1)
+        u = (Vinv @ U[..., :3, 3].unsqueeze(-1)).squeeze(-1)
         #assert not torch.any(torch.isnan(u)), f"nans in u log {torch.isnan(u).sum()}, {torch.where(torch.isnan(u))}"
-        return torch.cat([w,u],dim=-1)
+        return torch.cat([w, u], dim=-1)
 
     def lifted_elems(self,pt,nsamples):
         """ pt (bs,n,D) mask (bs,n), per_point specifies whether to
@@ -183,19 +175,22 @@ class SE3(SO3):
         bs,n = pt.shape[:2]
         dd_kwargs = to(pt)
 
-        q = torch.randn(bs,(n if self.per_point else 1),nsamples,4, **dd_kwargs)
+        q = torch.randn(bs, (n if self.per_point else 1), nsamples, 4, **dd_kwargs)
         q /= q.norm(dim=-1).unsqueeze(-1)
-        theta_2 = atan2(q[...,1:].norm(dim=-1),q[...,0]).unsqueeze(-1)
-        so3_elem = 2*sinc_inv(theta_2)*q[...,1:] # (sin(x/2)u -> xu) for x angle and u direction
-        se3_elem = torch.cat([so3_elem,torch.zeros_like(so3_elem)],dim=-1)
+
+        theta_2 = atan2(q[..., 1:].norm(dim=-1),q[..., 0])[..., None]
+        so3_elem = 2 * sinc_inv(theta_2) * q[...,1:] # (sin(x/2)u -> xu) for x angle and u direction
+        se3_elem = torch.cat([so3_elem, torch.zeros_like(so3_elem)], dim=-1)
         R = self.exp(se3_elem)
-        T = torch.zeros(bs,n,nsamples,4,4, **dd_kwargs) # (bs,n,nsamples,4,4)
-        T[...,:,:] = torch.eye(4, **dd_kwargs)
-        T[...,:3,3] = pt[:,:,None,:] # (bs,n,1,3)
-        a = self.log(T@R) # bs, n, nsamples, 6
-        return a.reshape(bs,n*nsamples,6)
+
+        T = torch.zeros(bs, n, nsamples, 4, 4, **dd_kwargs) # (bs,n,nsamples,4,4)
+        T[..., :, :] = torch.eye(4, **dd_kwargs)
+        T[..., :3, 3] = pt[..., None, :] # (bs,n,1,3)
+
+        a = self.log(T @ R) # bs, n, nsamples, 6
+        return a.reshape(bs, n * nsamples, 6)
 
     def distance(self,abq_pairs):
         dist_rot = abq_pairs[...,:3].norm(dim=-1)
         dist_trans = abq_pairs[...,3:].norm(dim=-1)
-        return dist_rot*self.alpha + (1-self.alpha)*dist_trans
+        return dist_rot * self.alpha + (1-self.alpha) * dist_trans
