@@ -65,13 +65,17 @@ class GlobalPool(nn.Module):
         super().__init__()
         self.mean = mean
 
-    def forward(self,x):
-        """x [xyz (bs,n,d), vals (bs,n,c), mask (bs,n)]"""
-        if len(x)==2: return x[1].mean(1)
+    def forward(self, x):
         coords, vals, mask = x
-        summed = vals.masked_fill_(~mask[..., None], 0.).sum(dim = 1)
+
+        if not exists(mask):
+            return val.mean(dim = 1)
+
+        masked_vals = vals.masked_fill_(~mask[..., None], 0.)
+        summed = masked_vals.sum(dim = 1)
         if self.mean:
-            summed /= mask.sum(-1).unsqueeze(-1)
+            count = mask.sum(-1).unsqueeze(-1)
+            summed /= count
         return summed
 
 # subsampling code
@@ -85,7 +89,7 @@ def FPSindices(dists, frac, mask):
     chosen_indices = torch.zeros(bs, m, dtype=torch.long, device=device)
     distances = torch.ones(bs, n,device=device) * 1e8
     a = torch.randint(0, n, (bs,), dtype=torch.long, device=device) #choose random start
-    idx = a % mask.sum(-1) + torch.cat([torch.zeros(1, device=device).long(), torch.cumsum(mask.sum(-1),dim=0)[:-1]],dim=0)
+    idx = a % mask.sum(-1) + torch.cat([torch.zeros(1, device=device).long(), torch.cumsum(mask.sum(-1),dim=0)[:-1]], dim=0)
     farthest = torch.where(mask)[1][idx]
 
     for i in range(m):
@@ -180,7 +184,7 @@ class LieSelfAttention(nn.Module):
         self.group = group # Equivariance group for LieConv
         self.register_buffer('r',torch.tensor(2.)) # Internal variable for local_neighborhood radius, set by fill
         self.fill_frac = min(fill,1.) # Average Fraction of the input which enters into local_neighborhood, determines r
-        self.knn=knn            # Whether or not to use the k nearest points instead of random samples for conv estimator
+        self.knn = knn            # Whether or not to use the k nearest points instead of random samples for conv estimator
 
         self.subsample = FPSsubsample(ds_frac, cache=cache, group=self.group)
         self.coeff = .5  # Internal coefficient used for updating r
@@ -216,6 +220,8 @@ class LieSelfAttention(nn.Module):
             abq_at_query = pairs_abq
             mask_at_query = mask
 
+        mask_at_query = mask_at_query[..., None]
+
         vals_at_query = inp_vals
         dists = self.group.distance(abq_at_query) #(bs,m,n,d) -> (bs,m,n)
         dists = dists.masked_fill(mask[:,None,:].expand(*dists.shape), 1e8)
@@ -225,14 +231,13 @@ class LieSelfAttention(nn.Module):
         # Determine ids (and mask) for points sampled within neighborhood (A4)
         if self.knn: # NBHD: KNN
             nbhd_idx = torch.topk(dists,k,dim=-1,largest=False,sorted=False)[1] #(bs,m,nbhd)
-            valid_within_ball = (nbhd_idx>-1)&mask[:,None,:]&mask_at_query[:,:,None]
-            assert not torch.any(nbhd_idx>dists.shape[-1]), f"error with topk,\
-                        nbhd{k} nans|inf{torch.any(torch.isnan(dists)|torch.isinf(dists))}"
+            valid_within_ball = (nbhd_idx > -1) & mask[:,None,:] & mask_at_query
+            assert not torch.any(nbhd_idx > dists.shape[-1]), f"error with topk, nbhd{k} nans|inf{torch.any(torch.isnan(dists)|torch.isinf(dists))}"
         else: # NBHD: Sampled Distance Ball
             bs, m, n = dists.shape
-            within_ball = (dists < self.r) & mask[:,None,:] & mask_at_query[:,:,None] # (bs,m,n)
+            within_ball = (dists < self.r) & mask[:,None,:] & mask_at_query # (bs,m,n)
             noise = torch.zeros((bs, m, n), device = device).uniform_(0, 1)
-            valid_within_ball, nbhd_idx =torch.topk(within_ball + noise, k, dim=-1, sorted=False)
+            valid_within_ball, nbhd_idx = torch.topk(within_ball + noise, k, dim=-1, sorted=False)
             valid_within_ball = (valid_within_ball > 1)
 
         # Retrieve abq_pairs, values, and mask at the nbhd locations
@@ -242,7 +247,7 @@ class LieSelfAttention(nn.Module):
         nbhd_mask = batched_index_select(mask, nbhd_idx, dim = 1)
 
         if self.training and not self.knn: # update ball radius to match fraction fill_frac inside
-            navg = (within_ball.float()).sum(-1).sum() / mask_at_query[:, :, None].sum()
+            navg = (within_ball.float()).sum(-1).sum() / mask_at_query.sum()
             avg_fill = (navg / mask.sum(-1).float().mean()).cpu().item()
             self.r +=  self.coeff * (self.fill_frac - avg_fill)
             self.fill_frac_ema += .1 * (avg_fill-self.fill_frac_ema)
@@ -372,19 +377,21 @@ class LieTransformer(nn.Module):
         )
 
         self.net = nn.Sequential(
-            Pass(nn.Linear(dim, dim)), # embedding layer
+            Pass(nn.Linear(dim, dim)),
             *[block(dim, fill[i]) for i in range(depth)],
             Pass(nn.LayerNorm(dim)),
             Pass(nn.Linear(dim, dim_out))
         )
 
-        self.pool = GlobalPool(mean=mean)
+        self.pool = GlobalPool(mean = mean)
 
-    def forward(self, x, pool = False):
-        lifted_x = self.group.lift(x, self.liftsamples)
+    def forward(self, feats, coors, mask = None, return_pooled = False):
+        inps = (coors, feats, mask)
+
+        lifted_x = self.group.lift(inps, self.liftsamples)
         out = self.net(lifted_x)
 
-        if not pool:
+        if not return_pooled:
             _, features, _ = out
             return features
 
