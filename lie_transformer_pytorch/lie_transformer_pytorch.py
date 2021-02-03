@@ -61,7 +61,7 @@ class Lambda(nn.Module):
 
 class GlobalPool(nn.Module):
     """computes values reduced over all spatial locations (& group elements) in the mask"""
-    def __init__(self,mean=False):
+    def __init__(self, mean = False):
         super().__init__()
         self.mean = mean
 
@@ -87,9 +87,9 @@ def FPSindices(dists, frac, mask):
     bs, n, device = *dists.shape[:2], dists.device
 
     chosen_indices = torch.zeros(bs, m, dtype=torch.long, device=device)
-    distances = torch.ones(bs, n,device=device) * 1e8
+    distances = torch.ones(bs, n, device=device) * 1e8
     a = torch.randint(0, n, (bs,), dtype=torch.long, device=device) #choose random start
-    idx = a % mask.sum(-1) + torch.cat([torch.zeros(1, device=device).long(), torch.cumsum(mask.sum(-1),dim=0)[:-1]], dim=0)
+    idx = a % mask.sum(-1) + torch.cat([torch.zeros(1, device=device).long(), torch.cumsum(mask.sum(-1), dim=0)[:-1]], dim=0)
     farthest = torch.where(mask)[1][idx]
 
     for i in range(m):
@@ -103,12 +103,12 @@ def FPSindices(dists, frac, mask):
 
 
 class FPSsubsample(nn.Module):
-    def __init__(self, ds_frac, cache=False, group=None):
+    def __init__(self, ds_frac, cache = False, group = None):
         super().__init__()
         self.ds_frac = ds_frac
         self.cache = cache
         self.cached_indices = None
-        self.group = group
+        self.group = default(group, SE3())
 
     def get_query_indices(self, abq_pairs, mask):
         if self.cache and exists(self.cached_indices):
@@ -161,27 +161,26 @@ class LieSelfAttention(nn.Module):
         mc_samples = 32,
         ds_frac = 1,
         loc_attn = False,
-        mean = False,
         fill = 1 / 3,
-        cache = False,
-        knn = False,
         dim_head = 64,
         heads = 8,
         attend_self = True,
-        **kwargs
+        cache = False
     ):
         super().__init__()
         self.dim = dim
-        self.mc_samples = mc_samples # number of samples to use to estimate convolution
 
+        self.mc_samples = mc_samples # number of samples to use to estimate convolution
         self.group = default(group, SE3()) # Equivariance group for LieConv
         self.register_buffer('r',torch.tensor(2.)) # Internal variable for local_neighborhood radius, set by fill
-        self.fill_frac = min(fill,1.) # Average Fraction of the input which enters into local_neighborhood, determines r
-        self.knn = knn            # Whether or not to use the k nearest points instead of random samples for conv estimator
+        self.fill_frac = min(fill, 1.) # Average Fraction of the input which enters into local_neighborhood, determines r
 
-        self.subsample = FPSsubsample(ds_frac, cache=cache, group=self.group)
+        self.subsample = FPSsubsample(ds_frac, cache = cache, group = self.group)
         self.coeff = .5  # Internal coefficient used for updating r
+
         self.fill_frac_ema = fill # Keeps track of average fill frac, used for logging only
+
+        # attention related parameters
 
         inner_dim = dim_head * heads
         self.heads = heads
@@ -217,21 +216,17 @@ class LieSelfAttention(nn.Module):
 
         vals_at_query = inp_vals
         dists = self.group.distance(abq_at_query) #(bs,m,n,d) -> (bs,m,n)
-        dists = dists.masked_fill(mask[:,None,:].expand(*dists.shape), 1e8)
+        mask_value = torch.finfo(dists.dtype).max
+        dists = dists.masked_fill(mask[:,None,:], mask_value)
 
         k = min(self.mc_samples, inp_vals.shape[1])
 
-        # Determine ids (and mask) for points sampled within neighborhood (A4)
-        if self.knn: # NBHD: KNN
-            nbhd_idx = torch.topk(dists,k,dim=-1,largest=False,sorted=False)[1] #(bs,m,nbhd)
-            valid_within_ball = (nbhd_idx > -1) & mask[:,None,:] & mask_at_query
-            assert not torch.any(nbhd_idx > dists.shape[-1]), f"error with topk, nbhd{k} nans|inf{torch.any(torch.isnan(dists)|torch.isinf(dists))}"
-        else: # NBHD: Sampled Distance Ball
-            bs, m, n = dists.shape
-            within_ball = (dists < self.r) & mask[:,None,:] & mask_at_query # (bs,m,n)
-            noise = torch.zeros((bs, m, n), device = device).uniform_(0, 1)
-            valid_within_ball, nbhd_idx = torch.topk(within_ball + noise, k, dim=-1, sorted=False)
-            valid_within_ball = (valid_within_ball > 1)
+        # NBHD: Sampled Distance Ball
+        bs, m, n = dists.shape
+        within_ball = (dists < self.r) & mask[:,None,:] & mask_at_query # (bs,m,n)
+        noise = torch.zeros((bs, m, n), device = device).uniform_(0, 1)
+        valid_within_ball, nbhd_idx = torch.topk(within_ball + noise, k, dim=-1, sorted=False)
+        valid_within_ball = (valid_within_ball > 1)
 
         # Retrieve abq_pairs, values, and mask at the nbhd locations
 
@@ -239,7 +234,7 @@ class LieSelfAttention(nn.Module):
         nbhd_vals = batched_index_select(vals_at_query, nbhd_idx, dim = 1)
         nbhd_mask = batched_index_select(mask, nbhd_idx, dim = 1)
 
-        if self.training and not self.knn: # update ball radius to match fraction fill_frac inside
+        if self.training: # update ball radius to match fraction fill_frac inside
             navg = (within_ball.float()).sum(-1).sum() / mask_at_query.sum()
             avg_fill = (navg / mask.sum(-1).float().mean()).cpu().item()
             self.r +=  self.coeff * (self.fill_frac - avg_fill)
@@ -349,8 +344,7 @@ class LieTransformer(nn.Module):
         mean = True,
         per_point = True,
         liftsamples = 4,
-        fill = 1/4,
-        knn = False,
+        fill = 1 / 4,
         cache = False,
         **kwargs
     ):
@@ -365,7 +359,7 @@ class LieTransformer(nn.Module):
         self.liftsamples = liftsamples
 
         block = lambda dim, fill: nn.Sequential(
-            LieSelfAttentionWrapper(dim, attn = partial(LieSelfAttention, dim, heads = heads, dim_head = dim_head, loc_attn = loc_attn, mc_samples=nbhd, ds_frac=ds_frac, mean=mean, group=group,fill=fill,cache=cache,knn=knn,**kwargs)),
+            LieSelfAttentionWrapper(dim, attn = partial(LieSelfAttention, dim, heads = heads, dim_head = dim_head, loc_attn = loc_attn, mc_samples=nbhd, ds_frac=ds_frac, group=group, fill=fill, cache=cache,**kwargs)),
             FeedForward(dim)
         )
 
