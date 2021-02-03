@@ -1,5 +1,6 @@
 from math import pi
 import torch
+from functools import wraps
 from torch import acos, atan2, cos, sin
 from einops import rearrange, repeat
 
@@ -12,50 +13,61 @@ THRES = 7e-2
 def to(t):
     return {'device': t.device, 'dtype': t.dtype}
 
+def taylor(thres):
+    def outer(fn):
+        @wraps(fn)
+        def inner(x):
+            usetaylor = x.abs() < THRES
+            taylor_expanded, full = fn(x, x * x)
+            return torch.where(usetaylor, taylor_expanded, full)
+        return inner
+    return outer
+
 # Helper functions for analytic exponential maps. Uses taylor expansions near x=0
 # See http://ethaneade.com/lie_groups.pdf for derivations.
 
-def sinc(x):
+@taylor(THRES)
+def sinc(x, x2):
     """ sin(x)/x """
-    x2=x*x
-    usetaylor = (x.abs()<THRES)
-    return torch.where(usetaylor,1-x2/6*(1-x2/20*(1-x2/42)),x.sin()/x)
+    texpand = 1-x2/6*(1-x2/20*(1-x2/42))
+    full = sin(x) / x
+    return texpand, full
 
-def sincc(x):
+@taylor(THRES)
+def sincc(x, x2):
     """ (1-sinc(x))/x^2"""
-    x2=x*x
-    usetaylor = (x.abs()<THRES)
-    return torch.where(usetaylor,1/6*(1-x2/20*(1-x2/42*(1-x2/72))),(x-x.sin())/x**3)
+    texpand = 1/6*(1-x2/20*(1-x2/42*(1-x2/72)))
+    full = (x-sin(x)) / x**3
+    return texpand, full
 
-def cosc(x):
+@taylor(THRES)
+def cosc(x, x2):
     """ (1-cos(x))/x^2"""
-    x2 = x*x
-    usetaylor = (x.abs()<THRES)
-    return torch.where(usetaylor,1/2*(1-x2/12*(1-x2/30*(1-x2/56))),(1-x.cos())/x**2)
+    texpand = 1/2*(1-x2/12*(1-x2/30*(1-x2/56)))
+    full = (1-cos(x)) / x2
+    return texpand, full
 
-def coscc(x):
-    """  """
-    x2 = x*x
+@taylor(THRES)
+def coscc(x, x2):
     #assert not torch.any(torch.isinf(x2)), f"infs in x2 log"
-    usetaylor = (x.abs()<THRES)
     texpand = 1/12*(1+x2/60*(1+x2/42*(1+x2/40)))
     costerm = (2*(1-cos(x))).clamp(min=1e-6)
-    full = (1-x*sin(x)/costerm)/x**2 #Nans can come up here when cos = 1
-    output = torch.where(usetaylor,texpand,full)
-    return output
+    full = (1-x*sin(x)/costerm) / x2 #Nans can come up here when cos = 1
+    return texpand, full
 
-def sinc_inv(x):
-    usetaylor = (x.abs()<THRES)
+@taylor(THRES)
+def sinc_inv(x, _):
     texpand = 1+(1/6)*x**2 +(7/360)*x**4
+    full = x / sin(x)
     assert not torch.any(torch.isinf(texpand)|torch.isnan(texpand)),'sincinv texpand inf'+torch.any(torch.isinf(texpand))
-    return torch.where(usetaylor,texpand,x/x.sin())
+    return texpand, full
 
 ## Lie Groups acting on R3
 
 # Hodge star on R3
 def cross_matrix(k):
     """Application of hodge star on R3, mapping Λ^1 R3 -> Λ^2 R3"""
-    K = torch.zeros(*k.shape[:-1],3,3, **to(k))
+    K = torch.zeros(*k.shape[:-1], 3, 3, **to(k))
     K[...,0,1] = -k[...,2]
     K[...,0,2] = k[...,1]
     K[...,1,0] = k[...,2]
@@ -102,7 +114,7 @@ class SO3:
             Input [u (*,rep_dim,rep_dim)]
             Output [coeffs of log(u) in basis (*,d)] """
         trR = R[..., 0, 0] + R[..., 1, 1] + R[..., 2, 2]
-        costheta = ((trR-1) / 2).clamp(max=1,min=-1).unsqueeze(-1)
+        costheta = ((trR-1) / 2).clamp(max=1, min=-1).unsqueeze(-1)
         theta = acos(costheta)
         logR = uncross_matrix(R) * sinc_inv(theta)
         return logR
@@ -121,7 +133,7 @@ class SO3:
     def lift(self,x,nsamples,**kwargs):
         """assumes p has shape (*,n,2), vals has shape (*,n,c), mask has shape (*,n)
             returns (a,v) with shapes [(*,n*nsamples,lie_dim),(*,n*nsamples,c)"""
-        p,v,m = x
+        p, v, m = x
         expanded_a = self.lifted_elems(p,nsamples,**kwargs) # (bs,n*ns,d), (bs,n*ns,qd)
         nsamples = expanded_a.shape[-2]//m.shape[-1]
         # expand v and mask like q
