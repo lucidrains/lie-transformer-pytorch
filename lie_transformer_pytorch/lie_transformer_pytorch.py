@@ -73,10 +73,12 @@ class GlobalPool(nn.Module):
 
         masked_vals = vals.masked_fill_(~mask[..., None], 0.)
         summed = masked_vals.sum(dim = 1)
-        if self.mean:
-            count = mask.sum(-1).unsqueeze(-1)
-            summed /= count
-        return summed
+
+        if not self.mean:
+            return summed
+
+        count = mask.sum(-1).unsqueeze(-1)
+        return summed / count
 
 # subsampling code
 
@@ -85,19 +87,21 @@ def FPSindices(dists, frac, mask):
         outputs: chosen_indices (bs,m) """
     m = int(round(frac * dists.shape[1]))
     bs, n, device = *dists.shape[:2], dists.device
+    dd_kwargs = {'device': device, 'dtype': torch.long}
+    B = torch.arange(bs, **dd_kwargs)
 
-    chosen_indices = torch.zeros(bs, m, dtype=torch.long, device=device)
+    chosen_indices = torch.zeros(bs, m, **dd_kwargs)
     distances = torch.ones(bs, n, device=device) * 1e8
-    a = torch.randint(0, n, (bs,), dtype=torch.long, device=device) #choose random start
-    idx = a % mask.sum(-1) + torch.cat([torch.zeros(1, device=device).long(), torch.cumsum(mask.sum(-1), dim=0)[:-1]], dim=0)
+    a = torch.randint(0, n, (bs,), **dd_kwargs)            # choose random start
+    idx = a % mask.sum(-1) + torch.cat([torch.zeros(1, **dd_kwargs), torch.cumsum(mask.sum(-1), dim=0)[:-1]], dim=0)
     farthest = torch.where(mask)[1][idx]
 
     for i in range(m):
-        chosen_indices[:, i] = farthest                  # add point that is farthest to chosen
-        dist = batched_index_select(dists, farthest, dim = 1).masked_fill(mask, -100) # (bs,n) compute distance from new point to all others
-        closer = dist < distances                        # if dist from new point is smaller than chosen points so far
-        distances[closer] = dist[closer]                 # update the chosen set's distance to all other points
-        farthest = torch.max(distances, -1)[1]           # select the point that is farthest from the set
+        chosen_indices[:, i] = farthest                    # add point that is farthest to chosen
+        dist = dists[B, farthest].masked_fill(~mask, -100) # (bs,n) compute distance from new point to all others
+        closer = dist < distances                          # if dist from new point is smaller than chosen points so far
+        distances[closer] = dist[closer]                   # update the chosen set's distance to all other points
+        farthest = torch.max(distances, -1)[1]             # select the point that is farthest from the set
 
     return chosen_indices
 
@@ -114,6 +118,7 @@ class FPSsubsample(nn.Module):
         if self.cache and exists(self.cached_indices):
             return self.cached_indices
 
+        dist = self.group.distance if self.group else lambda ab: ab.norm(dim=-1)
         value = FPSindices(dist(abq_pairs), self.ds_frac, mask).detach()
 
         if self.cache:
@@ -125,10 +130,8 @@ class FPSsubsample(nn.Module):
         abq_pairs,vals,mask = inp
         device = vals.device
 
-        dist = self.group.distance if self.group else lambda ab: ab.norm(dim=-1)
-
-        if self.ds_frac!=1:
-            query_idx = get_query_indices(abq_pairs, mask)
+        if self.ds_frac != 1:
+            query_idx = self.get_query_indices(abq_pairs, mask)
 
             B = torch.arange(query_idx.shape[0], device = device).long()[:,None]
             subsampled_abq_pairs = abq_pairs[B, query_idx][B, :, query_idx]
@@ -205,7 +208,7 @@ class LieSelfAttention(nn.Module):
         pairs_abq, inp_vals, mask = inp
         device = inp_vals.device
 
-        if query_indices is not None:
+        if exists(query_indices):
             abq_at_query = batched_index_select(pairs_abq, query_indices, dim = 1)
             mask_at_query = batched_index_select(mask, query_indices, dim = 1)
         else:
@@ -351,7 +354,7 @@ class LieTransformer(nn.Module):
         super().__init__()
         dim_out = default(dim_out, dim)
 
-        if isinstance(fill,(float,int)):
+        if isinstance(fill, (float, int)):
             fill = [fill] * depth
 
         group = SE3()
