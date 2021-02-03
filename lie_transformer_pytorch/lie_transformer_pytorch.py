@@ -156,15 +156,13 @@ class FPSsubsample(nn.Module):
 class LieSelfAttention(nn.Module):
     def __init__(
         self,
-        chin,
+        dim,
+        group = None,
         mc_samples = 32,
-        xyz_dim = 3,
         ds_frac = 1,
         loc_attn = False,
-        knn_channels = None,
         mean = False,
-        group = SE3,
-        fill = 1/3,
+        fill = 1 / 3,
         cache = False,
         knn = False,
         dim_head = 64,
@@ -173,15 +171,10 @@ class LieSelfAttention(nn.Module):
         **kwargs
     ):
         super().__init__()
-        self.chin = chin # input channels
-        self.cmco_ci = 16 # a hyperparameter controlling size and bottleneck compute cost of weightnet
-        self.xyz_dim = xyz_dim # dimension of the space on which convolution operates
-        self.knn_channels = knn_channels # number of xyz dims on which to compute knn
+        self.dim = dim
         self.mc_samples = mc_samples # number of samples to use to estimate convolution
 
-        self.mean=mean  # Whether or not to divide by the number of mc_samples
-
-        self.group = group # Equivariance group for LieConv
+        self.group = default(group, SE3()) # Equivariance group for LieConv
         self.register_buffer('r',torch.tensor(2.)) # Internal variable for local_neighborhood radius, set by fill
         self.fill_frac = min(fill,1.) # Average Fraction of the input which enters into local_neighborhood, determines r
         self.knn = knn            # Whether or not to use the k nearest points instead of random samples for conv estimator
@@ -194,10 +187,10 @@ class LieSelfAttention(nn.Module):
         self.heads = heads
         self.attend_self = attend_self
 
-        self.to_q = nn.Linear(chin, inner_dim, bias = False)
-        self.to_k = nn.Linear(chin, inner_dim, bias = False)
-        self.to_v = nn.Linear(chin, inner_dim, bias = False)
-        self.to_out = nn.Linear(inner_dim, chin)
+        self.to_q = nn.Linear(dim, inner_dim, bias = False)
+        self.to_k = nn.Linear(dim, inner_dim, bias = False)
+        self.to_v = nn.Linear(dim, inner_dim, bias = False)
+        self.to_out = nn.Linear(inner_dim, dim)
 
         self.loc_attn_mlp = nn.Sequential(
             nn.Linear(self.group.lie_dim, self.group.lie_dim * 4),
@@ -226,7 +219,7 @@ class LieSelfAttention(nn.Module):
         dists = self.group.distance(abq_at_query) #(bs,m,n,d) -> (bs,m,n)
         dists = dists.masked_fill(mask[:,None,:].expand(*dists.shape), 1e8)
 
-        k = min(self.mc_samples,inp_vals.shape[1])
+        k = min(self.mc_samples, inp_vals.shape[1])
 
         # Determine ids (and mask) for points sampled within neighborhood (A4)
         if self.knn: # NBHD: KNN
@@ -332,16 +325,16 @@ class FeedForward(nn.Module):
 
 class LieTransformer(nn.Module):
     """
-        [Fill] specifies the fraction of the input which is included in local neighborhood.
-                (can be array to specify a different value for each layer)
-        [nbhd] number of samples to use for Monte Carlo estimation (p)
-        [chin] number of input channels: 1 for MNIST, 3 for RGB images, other for non images
-        [ds_frac] total downsampling to perform throughout the layers of the net. In (0,1)
-        [num_layers] number of BottleNeck Block layers in the network
-        [k] channel width for the network. Can be int (same for all) or array to specify individually.
-        [liftsamples] number of samples to use in lifting. 1 for all groups with trivial stabilizer. Otherwise 2+
-        [Group] Chosen group to be equivariant to.
-        """
+    [Fill] specifies the fraction of the input which is included in local neighborhood.
+            (can be array to specify a different value for each layer)
+    [nbhd] number of samples to use for Monte Carlo estimation (p)
+    [dim] number of input channels: 1 for MNIST, 3 for RGB images, other for non images
+    [ds_frac] total downsampling to perform throughout the layers of the net. In (0,1)
+    [num_layers] number of BottleNeck Block layers in the network
+    [k] channel width for the network. Can be int (same for all) or array to specify individually.
+    [liftsamples] number of samples to use in lifting. 1 for all groups with trivial stabilizer. Otherwise 2+
+    [Group] Chosen group to be equivariant to.
+    """
     def __init__(
         self,
         dim,
