@@ -35,7 +35,7 @@ out = model(features, coors, mask = mask) # (1, 256, 512) <- 256 = (seq len * li
 
 ## Todo
 
-- [ ] Figure out location based attention as described in section 3.2 I think it may be as simple as https://github.com/lucidrains/lie-transformer-pytorch/blob/main/lie_transformer_pytorch/lie_transformer_pytorch.py#L262-L265 . Welcoming any feedback
+- [ ] Figure out location based attention as described in section 3.2 I think it may be as simple as https://github.com/lucidrains/lie-transformer-pytorch/blob/main/lie_transformer_pytorch/lie_transformer_pytorch.py#L265-L268 . Welcoming any feedback
 
 ## Credit
 
