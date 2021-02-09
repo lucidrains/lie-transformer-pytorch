@@ -8,14 +8,13 @@ from torch import nn, einsum
 from lie_transformer_pytorch.se3 import SE3
 from einops import rearrange, repeat
 
-# constants
-
-TOKEN_SELF_ATTN_VALUE = -5e4 # carefully set for half precision to work
-
 # helpers
 
 def exists(val):
     return val is not None
+
+def cast_tuple(val, depth):
+    return val if isinstance(val, tuple) else ((val,) * depth)
 
 def default(val, d):
     return val if exists(val) else d
@@ -167,7 +166,6 @@ class LieSelfAttention(nn.Module):
         fill = 1 / 3,
         dim_head = 64,
         heads = 8,
-        attend_self = True,
         cache = False
     ):
         super().__init__()
@@ -187,7 +185,6 @@ class LieSelfAttention(nn.Module):
 
         inner_dim = dim_head * heads
         self.heads = heads
-        self.attend_self = attend_self
 
         self.to_q = nn.Linear(dim, inner_dim, bias = False)
         self.to_k = nn.Linear(dim, inner_dim, bias = False)
@@ -269,12 +266,6 @@ class LieSelfAttention(nn.Module):
 
         mask_value = -torch.finfo(sim.dtype).max
 
-        if not self.attend_self:
-            seq = torch.arange(n, device = device)
-            seq = rearrange(seq, 'n -> () n ()')
-            mask = (seq == nbhd_indices)
-            sim.masked_fill_(mask, TOKEN_SELF_ATTN_VALUE)
-
         sim.masked_fill_(~rearrange(nbhd_mask, 'b n m -> b () n m'), mask_value)
 
         attn = sim.softmax(dim = -1)
@@ -288,7 +279,7 @@ class LieSelfAttentionWrapper(nn.Module):
     def __init__(self, dim, attn):
         super().__init__()
         self.dim = dim
-        self.attn = attn()
+        self.attn = attn
 
         self.net = nn.Sequential(
             Pass(nn.LayerNorm(dim)),
@@ -356,21 +347,22 @@ class LieTransformer(nn.Module):
         dim_out = default(dim_out, dim)
         self.token_emb = nn.Embedding(num_tokens, dim) if exists(num_tokens) else None
 
-        if isinstance(fill, (float, int)):
-            fill = [fill] * depth
-
         group = SE3()
         self.group = group
         self.liftsamples = liftsamples
 
-        block = lambda dim, fill: nn.Sequential(
-            LieSelfAttentionWrapper(dim, attn = partial(LieSelfAttention, dim, heads = heads, dim_head = dim_head, loc_attn = loc_attn, mc_samples=nbhd, ds_frac=ds_frac, group=group, fill=fill, cache=cache,**kwargs)),
-            FeedForward(dim)
-        )
+        layers_fill = cast_tuple(fill, depth)
+        layers = []
+
+        for _, layer_fill in zip(range(depth), layers_fill):
+            layers.extend([
+                LieSelfAttentionWrapper(dim, LieSelfAttention(dim, heads = heads, dim_head = dim_head, loc_attn = loc_attn, mc_samples = nbhd, ds_frac = ds_frac, group = group, fill = fill, cache = cache,**kwargs)),
+                FeedForward(dim)
+            ])
 
         self.net = nn.Sequential(
             Pass(nn.Linear(dim, dim)),
-            *[block(dim, fill[i]) for i in range(depth)],
+            *layers,
             Pass(nn.LayerNorm(dim)),
             Pass(nn.Linear(dim, dim_out))
         )
