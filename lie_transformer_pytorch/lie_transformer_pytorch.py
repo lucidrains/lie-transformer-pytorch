@@ -339,7 +339,7 @@ class LieTransformer(nn.Module):
         heads = 8,
         dim_head = 64,
         depth = 2,
-        loc_attn = False,
+        loc_attn = True,
         ds_frac = 1,
         dim_out = None,
         k = 1536,
