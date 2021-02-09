@@ -33,9 +33,31 @@ mask = torch.ones(1, 64).bool()
 out = model(features, coors, mask = mask) # (1, 256, 512) <- 256 = (seq len * liftsamples)
 ```
 
+Allowing Lie Transformer take care of embedding the features, just specify the number of unique tokens (node types).
+
+```python
+import torch
+from lie_transformer_pytorch import LieTransformer
+
+model = LieTransformer(
+    num_tokens = 28,           # say 28 different types of atoms
+    dim = 512,
+    depth = 2,
+    heads = 8,
+    dim_head = 64,
+    liftsamples = 4
+)
+
+atoms = torch.randint(0, 28, (1, 64))
+coors = torch.randn(1, 64, 3)
+mask = torch.ones(1, 64).bool()
+
+out = model(atoms, coors, mask = mask) # (1, 256, 512) <- 256 = (seq len * liftsamples)
+```
+
 ## Credit
 
-This repository is largely adapted from <a href="https://github.com/mfinzi/LieConv">LieConv</a>, cited below!
+This repository is largely adapted from <a href="https://github.com/mfinzi/LieConv">LieConv</a>, cited below
 
 ## Citations
 

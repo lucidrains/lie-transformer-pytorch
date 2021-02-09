@@ -336,6 +336,7 @@ class LieTransformer(nn.Module):
     def __init__(
         self,
         dim,
+        num_tokens = None,
         heads = 8,
         dim_head = 64,
         depth = 2,
@@ -353,6 +354,7 @@ class LieTransformer(nn.Module):
     ):
         super().__init__()
         dim_out = default(dim_out, dim)
+        self.token_emb = nn.Embedding(num_tokens, dim) if exists(num_tokens) else None
 
         if isinstance(fill, (float, int)):
             fill = [fill] * depth
@@ -376,6 +378,9 @@ class LieTransformer(nn.Module):
         self.pool = GlobalPool(mean = mean)
 
     def forward(self, feats, coors, mask = None, return_pooled = False):
+        if exists(self.token_emb):
+            feats = self.token_emb(feats)
+
         inps = (coors, feats, mask)
 
         lifted_x = self.group.lift(inps, self.liftsamples)
