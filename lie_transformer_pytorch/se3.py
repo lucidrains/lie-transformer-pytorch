@@ -10,6 +10,9 @@ THRES = 7e-2
 
 # helper functions
 
+def exists(val):
+    return val is not None
+
 def to(t):
     return {'device': t.device, 'dtype': t.dtype}
 
@@ -130,19 +133,21 @@ class SO3:
         u = self.exp(a.unsqueeze(-2))
         return self.log(vinv@u)    # ((bs,1,n,d) -> (bs,1,n,r,r))@((bs,n,1,d) -> (bs,n,1,r,r))
 
-    def lift(self,x,nsamples,**kwargs):
+    def lift(self, x, nsamples, **kwargs):
         """assumes p has shape (*,n,2), vals has shape (*,n,c), mask has shape (*,n)
             returns (a,v) with shapes [(*,n*nsamples,lie_dim),(*,n*nsamples,c)"""
-        p, v, m = x
+        p, v, m, e = x
         expanded_a = self.lifted_elems(p,nsamples,**kwargs) # (bs,n*ns,d), (bs,n*ns,qd)
         nsamples = expanded_a.shape[-2]//m.shape[-1]
         # expand v and mask like q
         expanded_v = repeat(v, 'b n c -> b (n m) c', m = nsamples) # (bs,n,c) -> (bs,n,1,c) -> (bs,n,ns,c) -> (bs,n*ns,c)
         expanded_mask = repeat(m, 'b n -> b (n m)', m = nsamples) # (bs,n) -> (bs,n,ns) -> (bs,n*ns)
+        expanded_e = repeat(e, 'b n1 n2 c -> b (n1 m1) (n2 m2) c', m1 = nsamples, m2 = nsamples) if exists(e) else None
+
         # convert from elems to pairs
         paired_a = self.elems2pairs(expanded_a) #(bs,n*ns,d) -> (bs,n*ns,n*ns,d)
         embedded_locations = paired_a
-        return (embedded_locations,expanded_v,expanded_mask)
+        return (embedded_locations,expanded_v,expanded_mask, expanded_e)
 
 class SE3(SO3):
     lie_dim = 6

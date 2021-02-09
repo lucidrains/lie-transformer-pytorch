@@ -126,7 +126,7 @@ class FPSsubsample(nn.Module):
         return value
 
     def forward(self, inp, withquery=False):
-        abq_pairs,vals,mask = inp
+        abq_pairs, vals, mask, edges = inp
         device = vals.device
 
         if self.ds_frac != 1:
@@ -136,16 +136,19 @@ class FPSsubsample(nn.Module):
             subsampled_abq_pairs = abq_pairs[B, query_idx][B, :, query_idx]
             subsampled_values = batched_index_select(vals, query_idx, dim = 1)
             subsampled_mask = batched_index_select(mask, query_idx, dim = 1)
+            subsampled_edges = edges[B, query_idx][B, :, query_idx] if exists(edges) else None
         else:
             subsampled_abq_pairs = abq_pairs
             subsampled_values = vals
             subsampled_mask = mask
+            subsampled_edges = edges
             query_idx = None
 
         ret = (
             subsampled_abq_pairs,
             subsampled_values,
-            subsampled_mask
+            subsampled_mask,
+            subsampled_edges
         )
 
         if withquery:
@@ -159,10 +162,10 @@ class LieSelfAttention(nn.Module):
     def __init__(
         self,
         dim,
+        edge_dim = None,
         group = None,
         mc_samples = 32,
         ds_frac = 1,
-        loc_attn = False,
         fill = 1 / 3,
         dim_head = 64,
         heads = 8,
@@ -191,26 +194,31 @@ class LieSelfAttention(nn.Module):
         self.to_v = nn.Linear(dim, inner_dim, bias = False)
         self.to_out = nn.Linear(inner_dim, dim)
 
-        self.loc_attn_mlp = nn.Sequential(
-            nn.Linear(self.group.lie_dim, self.group.lie_dim * 4),
-            nn.ReLU(),
-            nn.Linear(self.group.lie_dim * 4, 1),
-        ) if loc_attn else None
+        edge_dim = default(edge_dim, 0)
+        edge_dim_in = self.group.lie_dim + edge_dim
 
-    def extract_neighborhood(self,inp,query_indices):
+        self.loc_attn_mlp = nn.Sequential(
+            nn.Linear(edge_dim_in, edge_dim_in * 4),
+            nn.ReLU(),
+            nn.Linear(edge_dim_in * 4, 1),
+        )
+
+    def extract_neighborhood(self, inp, query_indices):
         """ inputs: [pairs_abq (bs,n,n,d), inp_vals (bs,n,c), mask (bs,n), query_indices (bs,m)]
             outputs: [neighbor_abq (bs,m,mc_samples,d), neighbor_vals (bs,m,mc_samples,c)]"""
 
         # Subsample pairs_ab, inp_vals, mask to the query_indices
-        pairs_abq, inp_vals, mask = inp
+        pairs_abq, inp_vals, mask, edges = inp
         device = inp_vals.device
 
         if exists(query_indices):
             abq_at_query = batched_index_select(pairs_abq, query_indices, dim = 1)
             mask_at_query = batched_index_select(mask, query_indices, dim = 1)
+            edges_at_query = batched_index_select(edges, query_indices, dim = 1) if exists(edges) else None
         else:
             abq_at_query = pairs_abq
             mask_at_query = mask
+            edges_at_query = edges
 
         mask_at_query = mask_at_query[..., None]
 
@@ -233,6 +241,7 @@ class LieSelfAttention(nn.Module):
         nbhd_abq = batched_index_select(abq_at_query, nbhd_idx, dim = 2)
         nbhd_vals = batched_index_select(vals_at_query, nbhd_idx, dim = 1)
         nbhd_mask = batched_index_select(mask, nbhd_idx, dim = 1)
+        nbhd_edges = batched_index_select(edges_at_query, nbhd_idx, dim = 2) if exists(edges) else None
 
         if self.training: # update ball radius to match fraction fill_frac inside
             navg = (within_ball.float()).sum(-1).sum() / mask_at_query.sum()
@@ -242,13 +251,13 @@ class LieSelfAttention(nn.Module):
 
         nbhd_mask &= valid_within_ball.bool()
 
-        return nbhd_abq, nbhd_vals, nbhd_mask, nbhd_idx
+        return nbhd_abq, nbhd_vals, nbhd_mask, nbhd_edges, nbhd_idx
 
     def forward(self, inp):
         """inputs: [pairs_abq (bs,n,n,d)], [inp_vals (bs,n,ci)]), [query_indices (bs,m)]
            outputs [subsampled_abq (bs,m,m,d)], [convolved_vals (bs,m,co)]"""
-        sub_abq, sub_vals, sub_mask, query_indices = self.subsample(inp, withquery = True)
-        nbhd_abq, nbhd_vals, nbhd_mask, nbhd_indices = self.extract_neighborhood(inp, query_indices)
+        sub_abq, sub_vals, sub_mask, sub_edges, query_indices = self.subsample(inp, withquery = True)
+        nbhd_abq, nbhd_vals, nbhd_mask, nbhd_edges, nbhd_indices = self.extract_neighborhood(inp, query_indices)
 
         h, b, n, d, device = self.heads, *sub_vals.shape, sub_vals.device
 
@@ -259,10 +268,13 @@ class LieSelfAttention(nn.Module):
 
         sim = einsum('b h i d, b h i j d -> b h i j', q, k) * (q.shape[-1] ** -0.5)
 
-        if exists(self.loc_attn_mlp):
-            loc_attn = self.loc_attn_mlp(nbhd_abq)
-            loc_attn = rearrange(loc_attn, 'b i j () -> b () i j')
-            sim = sim + loc_attn
+        edges = nbhd_abq
+        if exists(nbhd_edges):
+            edges = torch.cat((nbhd_abq, nbhd_edges), dim = -1)
+
+        loc_attn = self.loc_attn_mlp(edges)
+        loc_attn = rearrange(loc_attn, 'b i j () -> b () i j')
+        sim = sim + loc_attn
 
         mask_value = -torch.finfo(sim.dtype).max
 
@@ -273,7 +285,7 @@ class LieSelfAttention(nn.Module):
         out = rearrange(out, 'b h n d -> b n (h d)', h = h)
         combined = self.to_out(out)
 
-        return sub_abq, combined, sub_mask
+        return sub_abq, combined, sub_mask, sub_edges
 
 class LieSelfAttentionWrapper(nn.Module):
     def __init__(self, dim, attn):
@@ -286,11 +298,11 @@ class LieSelfAttentionWrapper(nn.Module):
             self.attn
         )
 
-    def forward(self,inp):
-        sub_coords, sub_values, mask = self.attn.subsample(inp)
-        new_coords, new_values, mask = self.net(inp)
-        new_values[...,:self.dim] += sub_values
-        return new_coords, new_values, mask
+    def forward(self, inp):
+        sub_coords, sub_values, mask, edges = self.attn.subsample(inp)
+        new_coords, new_values, mask, edges = self.net(inp)
+        new_values[..., :self.dim] += sub_values
+        return new_coords, new_values, mask, edges
 
 class FeedForward(nn.Module):
     def __init__(self, dim, mult = 4):
@@ -305,10 +317,10 @@ class FeedForward(nn.Module):
         )
 
     def forward(self,inp):
-        sub_coords, sub_values, mask = inp
-        new_coords, new_values, mask = self.net(inp)
+        sub_coords, sub_values, mask, edges = inp
+        new_coords, new_values, mask, edges = self.net(inp)
         new_values = new_values + sub_values
-        return new_coords, new_values, mask
+        return new_coords, new_values, mask, edges
 
 # transformer class
 
@@ -328,10 +340,11 @@ class LieTransformer(nn.Module):
         self,
         dim,
         num_tokens = None,
+        num_edge_types = None,
+        edge_dim = 16,
         heads = 8,
         dim_head = 64,
         depth = 2,
-        loc_attn = True,
         ds_frac = 1,
         dim_out = None,
         k = 1536,
@@ -346,6 +359,7 @@ class LieTransformer(nn.Module):
         super().__init__()
         dim_out = default(dim_out, dim)
         self.token_emb = nn.Embedding(num_tokens, dim) if exists(num_tokens) else None
+        self.edge_emb = nn.Embedding(num_edge_types, edge_dim) if exists(num_edge_types) else None
 
         group = SE3()
         self.group = group
@@ -356,7 +370,7 @@ class LieTransformer(nn.Module):
 
         for _, layer_fill in zip(range(depth), layers_fill):
             layers.extend([
-                LieSelfAttentionWrapper(dim, LieSelfAttention(dim, heads = heads, dim_head = dim_head, loc_attn = loc_attn, mc_samples = nbhd, ds_frac = ds_frac, group = group, fill = fill, cache = cache,**kwargs)),
+                LieSelfAttentionWrapper(dim, LieSelfAttention(dim, heads = heads, dim_head = dim_head, edge_dim = edge_dim, mc_samples = nbhd, ds_frac = ds_frac, group = group, fill = fill, cache = cache,**kwargs)),
                 FeedForward(dim)
             ])
 
@@ -369,17 +383,24 @@ class LieTransformer(nn.Module):
 
         self.pool = GlobalPool(mean = mean)
 
-    def forward(self, feats, coors, mask = None, return_pooled = False):
+    def forward(self, feats, coors, edges = None, mask = None, return_pooled = False):
+        b, n, *_ = feats.shape
+
         if exists(self.token_emb):
             feats = self.token_emb(feats)
 
-        inps = (coors, feats, mask)
+        if exists(self.edge_emb):
+            assert exists(edges), 'edges must be passed in on forward'
+            assert edges.shape[1] == edges.shape[2] and edges.shape[1] == n, f'edges must be of the shape ({b}, {n}, {n})'
+            edges = self.edge_emb(edges)
+
+        inps = (coors, feats, mask, edges)
 
         lifted_x = self.group.lift(inps, self.liftsamples)
         out = self.net(lifted_x)
 
         if not return_pooled:
-            _, features, _ = out
+            features = out[1]
             return features
 
         return self.pool(out)

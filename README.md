@@ -55,6 +55,33 @@ mask = torch.ones(1, 64).bool()
 out = model(atoms, coors, mask = mask) # (1, 256, 512) <- 256 = (seq len * liftsamples)
 ```
 
+Although it was not in the paper, I decided to allow for passing in edge information as well (bond types). The edge information will be embedded by the dimension specified, concatted with the location, and passed through the MLP before summed with the attention matrix.
+
+Simply set two more keyword arguments on initialization of the transformer, and then pass in the specific bond types as shape `b x seq x seq`.
+
+```python
+import torch
+from lie_transformer_pytorch import LieTransformer
+
+model = LieTransformer(
+    num_tokens = 28,           # say 28 different types of atoms
+    num_edge_types = 4,        # number of different edge types
+    edge_dim = 16,             # dimension of edges
+    dim = 512,
+    depth = 2,
+    heads = 8,
+    dim_head = 64,
+    liftsamples = 4
+)
+
+atoms = torch.randint(0, 28, (1, 64))
+bonds = torch.randint(0, 4, (1, 64, 64))
+coors = torch.randn(1, 64, 3)
+mask = torch.ones(1, 64).bool()
+
+out = model(atoms, coors, edges = bonds, mask = mask) # (1, 256, 512) <- 256 = (seq len * liftsamples)
+```
+
 ## Credit
 
 This repository is largely adapted from <a href="https://github.com/mfinzi/LieConv">LieConv</a>, cited below
