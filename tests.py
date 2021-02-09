@@ -4,8 +4,7 @@ from lie_transformer_pytorch import LieTransformer
 def test_transformer():
     model = LieTransformer(
         dim = 512,
-        depth = 1,
-        loc_attn = True
+        depth = 1
     )
 
     feats = torch.randn(1, 64, 512)
