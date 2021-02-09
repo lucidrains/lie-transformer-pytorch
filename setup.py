@@ -3,7 +3,7 @@ from setuptools import setup, find_packages
 setup(
   name = 'lie-transformer-pytorch',
   packages = find_packages(),
-  version = '0.0.14',
+  version = '0.0.15',
   license='MIT',
   description = 'Lie Transformer - Pytorch',
   author = 'Phil Wang',

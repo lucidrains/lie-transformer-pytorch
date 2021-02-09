@@ -341,7 +341,7 @@ class LieTransformer(nn.Module):
         dim,
         num_tokens = None,
         num_edge_types = None,
-        edge_dim = 16,
+        edge_dim = None,
         heads = 8,
         dim_head = 64,
         depth = 2,
