@@ -350,7 +350,7 @@ class LieTransformer(nn.Module):
         ds_frac = 1.,
         dim_out = None,
         k = 1536,
-        nbhd = 3,
+        nbhd = 128,
         mean = True,
         per_point = True,
         liftsamples = 4,
