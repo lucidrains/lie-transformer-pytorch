@@ -8,6 +8,8 @@ from torch import nn, einsum
 from lie_transformer_pytorch.se3 import SE3
 from einops import rearrange, repeat
 
+from lie_transformer_pytorch.reversible import SequentialSequence, ReversibleSequence
+
 # helpers
 
 def exists(val):
@@ -345,18 +347,21 @@ class LieTransformer(nn.Module):
         heads = 8,
         dim_head = 64,
         depth = 2,
-        ds_frac = 1,
+        ds_frac = 1.,
         dim_out = None,
         k = 1536,
-        nbhd = 128,
+        nbhd = 3,
         mean = True,
         per_point = True,
         liftsamples = 4,
         fill = 1 / 4,
         cache = False,
+        reversible = False,
         **kwargs
     ):
         super().__init__()
+        assert not (ds_frac < 1 and reversible), 'must not downsample if network is reversible'
+
         dim_out = default(dim_out, dim)
         self.token_emb = nn.Embedding(num_tokens, dim) if exists(num_tokens) else None
         self.edge_emb = nn.Embedding(num_edge_types, edge_dim) if exists(num_edge_types) else None
@@ -366,17 +371,18 @@ class LieTransformer(nn.Module):
         self.liftsamples = liftsamples
 
         layers_fill = cast_tuple(fill, depth)
-        layers = []
+        layers = nn.ModuleList([])
 
         for _, layer_fill in zip(range(depth), layers_fill):
-            layers.extend([
+            layers.append(nn.ModuleList([
                 LieSelfAttentionWrapper(dim, LieSelfAttention(dim, heads = heads, dim_head = dim_head, edge_dim = edge_dim, mc_samples = nbhd, ds_frac = ds_frac, group = group, fill = fill, cache = cache,**kwargs)),
                 FeedForward(dim)
-            ])
+            ]))
 
-        self.net = nn.Sequential(
-            Pass(nn.Linear(dim, dim)),
-            *layers,
+        execute_class = ReversibleSequence if reversible else SequentialSequence
+        self.net = execute_class(layers)
+
+        self.to_logits = nn.Sequential(
             Pass(nn.LayerNorm(dim)),
             Pass(nn.Linear(dim, dim_out))
         )
@@ -398,6 +404,8 @@ class LieTransformer(nn.Module):
 
         lifted_x = self.group.lift(inps, self.liftsamples)
         out = self.net(lifted_x)
+
+        out = self.to_logits(out)
 
         if not return_pooled:
             features = out[1]
